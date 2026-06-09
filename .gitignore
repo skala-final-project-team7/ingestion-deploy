@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/    # 가상환경 디렉터리 (PDF 0518_RAG.pdf #1 명시). Secrets 섹션의 `.env` 가 파일·디렉터리 둘 다 잡지만 PDF 표기와 정합.
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Secrets / env (루트 CLAUDE.md 절대 규칙: .env 커밋 금지)
+.env
+.env.*
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Logs / 로컬 산출물
+*.log
+.cache/
+
+# 평가 산출물 / backfill 백업
+reports/
+*.bak
