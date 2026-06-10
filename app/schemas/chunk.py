@@ -52,7 +52,7 @@ class ChunkMetadata(BaseModel):
     첨부 4종은 본문 청크에서 None이며, source_type은 모든 청크가 명시한다.
     """
 
-    # --- 공통 13종 ---
+    # --- 공통 15종 ---
     chunk_id: str
     page_id: str
     page_title: str

@@ -131,6 +131,18 @@ class ConfluenceRestrictionAclProvider:
             parse_empty_restriction_policy(self.empty_restriction_policy),
         )
 
+    def reset_cache(self) -> None:
+        """restriction/parent 메모이즈 캐시를 비운다 — **수집 런 시작마다 호출**.
+
+        provider 는 startup 1회 생성되어 잡 간 재사용되므로(``api/deps.py``,
+        ``bootstrap.build_delta_runner``), 캐시를 런 단위로 비우지 않으면 Confluence 에서
+        변경된 restriction 이 재수집에 반영되지 않는다(이전 ACL 잔존 — over/under-grant).
+        full crawl 은 ``AtlassianSourceAdapter.fetch_pages``, delta 는 ``run_delta_sync``
+        진입 시 호출한다. 캐시는 한 런 내부에서만 API 비용을 조상 수로 상한한다.
+        """
+        self._restriction_cache.clear()
+        self._parent_cache.clear()
+
     def get_page_acl(
         self,
         *,
@@ -180,9 +192,7 @@ class ConfluenceRestrictionAclProvider:
         self._restriction_cache[page_id] = result
         return result
 
-    def _resolve_ancestor_ids(
-        self, page_id: str, provided: Sequence[str] | None
-    ) -> Iterator[str]:
+    def _resolve_ancestor_ids(self, page_id: str, provided: Sequence[str] | None) -> Iterator[str]:
         """조상 id 를 가까운 순으로 산출 — 전달분 우선, 없으면 parentId API 워크."""
         if provided is not None:
             seen: set[str] = {page_id}
@@ -214,7 +224,8 @@ class ConfluenceRestrictionAclProvider:
                 parent = str(raw_parent) if raw_parent else None
             except Exception:  # noqa: BLE001 — 조상 조회 실패가 수집을 중단시키지 않는다.
                 _LOGGER.warning(
-                    "ancestor lookup failed for page_id=%s — 정책 폴백으로 진행", page_id,
+                    "ancestor lookup failed for page_id=%s — 정책 폴백으로 진행",
+                    page_id,
                     exc_info=True,
                 )
                 parent = None
@@ -331,6 +342,11 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
                 None 이면 전체(Full Crawl). 에이전트 MVP 는 항상 전체를 수집하므로
                 증분 필터는 어댑터에서 ``last_modified`` 비교로 적용한다.
         """
+        # 런 단위 ACL 캐시 초기화 — provider 가 잡 간 재사용되므로, 직전 크롤이 캐시한
+        # restriction 이 이번 런의 ACL 산출에 재사용되지 않게 한다(권한 변경 반영).
+        reset_cache = getattr(self._acl_provider, "reset_cache", None)
+        if callable(reset_cache):
+            reset_cache()
         documents = self._collect_documents()
         # 2026-06-10(A2 후속) — 크롤 payload 의 parent_id 로 조상 체인을 로컬 구성한다.
         # provider 의 ancestor restriction 워크가 추가 API 호출 없이 동작하게 하고,
@@ -456,13 +472,28 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
     ) -> tuple[list[str], list[str]]:
         if self._acl_provider is None:
             return self._synthesize_acl(space_key)
-        # ancestor_ids 는 capability 플래그(supports_ancestor_ids)를 켠 provider 에만
-        # 전달한다 — 2-kwarg 시그니처의 기존/테스트 fake provider 호환(A2 후속).
-        if ancestor_ids is not None and getattr(self._acl_provider, "supports_ancestor_ids", False):
-            return self._acl_provider.get_page_acl(
-                page_id=page_id, space_key=space_key, ancestor_ids=ancestor_ids
+        # restriction 조회 하드 실패(재시도 소진 등)는 페이지 단위로 격리한다 — 1건이
+        # full crawl 잡 전체를 FAILED 로 만들지 않도록 빈 ACL 로 fail-closed 강등하고
+        # (빈 ACL 페이지는 chunking 의 INVALID_ACL 게이트가 색인에서 제외 — app/CLAUDE.md
+        # §3), delta 경로의 페이지 단위 격리(A13, sync.py failed_items)와 정합한다.
+        try:
+            # ancestor_ids 는 capability 플래그(supports_ancestor_ids)를 켠 provider 에만
+            # 전달한다 — 2-kwarg 시그니처의 기존/테스트 fake provider 호환(A2 후속).
+            if ancestor_ids is not None and getattr(
+                self._acl_provider, "supports_ancestor_ids", False
+            ):
+                return self._acl_provider.get_page_acl(
+                    page_id=page_id, space_key=space_key, ancestor_ids=ancestor_ids
+                )
+            return self._acl_provider.get_page_acl(page_id=page_id, space_key=space_key)
+        except Exception:  # noqa: BLE001 — restriction API 실패는 페이지 단위 fail-closed 격리
+            _LOGGER.warning(
+                "ACL restriction lookup failed for page_id=%s — 빈 ACL(fail-closed)로 "
+                "강등해 색인에서 제외되도록 한다(INVALID_ACL 게이트)",
+                page_id,
+                exc_info=True,
             )
-        return self._acl_provider.get_page_acl(page_id=page_id, space_key=space_key)
+            return [], []
 
 
 def parse_read_restrictions_acl(

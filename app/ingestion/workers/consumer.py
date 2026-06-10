@@ -9,6 +9,11 @@
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-05-26, 최초 작성, featureI-4 — MessageConsumer ABC + FakeMessageConsumer +
     PikaMessageConsumer. Chunking Worker 의 큐 소비 배선에 사용.
+  - 2026-06-10, 배포 전 점검 — malformed body(비 JSON·비 dict) poison 격리. 종전에는
+    ``json.loads`` 가 generator 안에서 예외를 던져 Worker 루프가 미ack 상태로 죽고
+    재전송 crash 루프가 됐다(A4 의 메시지-단위 격리를 body 파싱 계층까지 확장).
+    malformed 메시지는 로그 후 ``basic_nack(requeue=False)`` 로 거부한다(DLX 구성 시
+    DLQ 로 이동, 미구성 시 폐기 — 재시도해도 해소되지 않는 영구 실패).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -20,10 +25,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class MessageConsumer(ABC):
@@ -67,7 +75,31 @@ class PikaMessageConsumer(MessageConsumer):
         for method, _properties, body in self._channel.consume(
             self._queue, auto_ack=self._auto_ack
         ):
-            message: dict[str, Any] = json.loads(body.decode("utf-8"))
+            # malformed body 격리 — 비 JSON/비 UTF-8/비 dict 는 재시도해도 해소되지 않는
+            # 영구 실패다. generator 밖으로 전파되면 Worker 루프가 미ack 상태로 죽고
+            # 재전송 crash 루프가 되므로(A4 와 같은 뿌리), 여기서 nack(requeue=False)
+            # 후 다음 메시지로 진행한다(DLX 구성 시 DLQ 로 이동).
+            try:
+                message = json.loads(body.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                _LOGGER.error(
+                    "queue consumer: malformed body 1건 거부(non-JSON) — queue=%s", self._queue
+                )
+                self._reject(method)
+                continue
+            if not isinstance(message, dict):
+                _LOGGER.error(
+                    "queue consumer: malformed body 1건 거부(non-dict: %s) — queue=%s",
+                    type(message).__name__,
+                    self._queue,
+                )
+                self._reject(method)
+                continue
             yield message
             if not self._auto_ack:
                 self._channel.basic_ack(method.delivery_tag)
+
+    def _reject(self, method: Any) -> None:
+        """malformed 메시지를 재큐잉 없이 거부한다(auto_ack 면 브로커가 이미 ack)."""
+        if not self._auto_ack:
+            self._channel.basic_nack(method.delivery_tag, requeue=False)

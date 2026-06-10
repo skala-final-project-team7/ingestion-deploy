@@ -12,6 +12,11 @@
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-05-29, 최초 작성 — IngestJobRecord + IngestJobStore ABC + InMemoryIngestJobStore
     (PoC/단일 프로세스). 운영 다중 워커 환경은 공유 저장소(MySQL/Redis) 구현으로 교체한다.
+  - 2026-06-10, 배포 전 점검 — (1) ``create(job_id=...)`` 로 외부(BFF) 생성 jobId 수용
+    (api-spec v2.5.0 §2-2 — jobId 는 "BFF 가 생성하거나 Pipeline 이 생성"). (2) ``get``/
+    ``update`` 가 내부 레코드의 **스냅샷**을 반환 — 백그라운드 태스크의 필드별 갱신과
+    상태 조회 라우트가 같은 객체를 공유해 생기던 torn read(예: COMPLETED인데 카운트 0)
+    제거.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -24,7 +29,7 @@ from __future__ import annotations
 import threading
 import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from app.schemas.enums import IngestJobStatus
@@ -53,16 +58,24 @@ class IngestJobStore(ABC):
     """수집 잡 수명주기 저장소 인터페이스 — 라우트·백그라운드 태스크가 공유한다."""
 
     @abstractmethod
-    def create(self) -> IngestJobRecord:
-        """``STARTED`` 상태의 새 잡을 생성하고 고유 ``job_id`` 를 부여해 반환한다."""
+    def create(self, job_id: str | None = None) -> IngestJobRecord:
+        """``STARTED`` 상태의 새 잡을 생성해 반환한다.
+
+        Args:
+            job_id: 외부(BFF)가 생성해 전달한 작업 식별자(api-spec v2.5.0 §2-2).
+                None 이면 고유 ``job_id`` 를 새로 부여한다.
+        """
 
     @abstractmethod
     def get(self, job_id: str) -> IngestJobRecord | None:
-        """``job_id`` 로 잡을 조회한다. 없으면 None(라우트가 404로 매핑)."""
+        """``job_id`` 로 잡을 조회한다. 없으면 None(라우트가 404로 매핑).
+
+        구현은 호출자와 내부 상태가 객체를 공유하지 않도록 **스냅샷**을 반환해야 한다.
+        """
 
     @abstractmethod
     def update(self, job_id: str, **changes: object) -> IngestJobRecord | None:
-        """잡의 필드를 부분 갱신한다(존재하지 않으면 None)."""
+        """잡의 필드를 부분 갱신한다(존재하지 않으면 None). 반환값은 스냅샷."""
 
 
 class InMemoryIngestJobStore(IngestJobStore):
@@ -77,19 +90,23 @@ class InMemoryIngestJobStore(IngestJobStore):
         self._jobs: dict[str, IngestJobRecord] = {}
         self._lock = threading.Lock()
 
-    def create(self) -> IngestJobRecord:
+    def create(self, job_id: str | None = None) -> IngestJobRecord:
         with self._lock:
             record = IngestJobRecord(
-                job_id=f"job-{uuid.uuid4()}",
+                job_id=job_id or f"job-{uuid.uuid4()}",
                 status=IngestJobStatus.STARTED,
                 started_at=datetime.now(UTC),
             )
             self._jobs[record.job_id] = record
-            return record
+            return replace(record)
 
     def get(self, job_id: str) -> IngestJobRecord | None:
         with self._lock:
-            return self._jobs.get(job_id)
+            record = self._jobs.get(job_id)
+            # 라이브 레코드를 그대로 반환하면 백그라운드 태스크의 필드별 setattr 와
+            # 라우트의 직렬화가 같은 객체에서 교차해 torn read 가 된다 — 락 안에서
+            # 스냅샷을 만들어 반환한다.
+            return None if record is None else replace(record)
 
     def update(self, job_id: str, **changes: object) -> IngestJobRecord | None:
         with self._lock:
@@ -98,4 +115,4 @@ class InMemoryIngestJobStore(IngestJobStore):
                 return None
             for key, value in changes.items():
                 setattr(record, key, value)
-            return record
+            return replace(record)

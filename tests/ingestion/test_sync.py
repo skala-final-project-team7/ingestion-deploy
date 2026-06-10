@@ -209,3 +209,41 @@ def test_run_delta_sync_isolates_single_mapping_failure_and_continues() -> None:
     assert [m.body["page_id"] for m in publisher.messages] == ["page-ok"]
     # failed_items = 워크플로 실패(1) + 페이지 격리 실패(1).
     assert result.failed_items == 2
+
+
+def test_run_delta_sync_resets_provider_cache_at_run_start() -> None:
+    """배포 전 점검(2026-06-10) — delta 런 시작 시 provider 캐시를 초기화한다.
+
+    provider 는 잡 간 재사용되므로(full crawl fetch_pages 와 동일 규칙) reset 없이는
+    직전 런이 캐시한 restriction 이 재사용돼 권한 변경이 반영되지 않는다.
+    """
+
+    class _ResetSpyAclProvider:
+        def __init__(self) -> None:
+            self.reset_calls = 0
+
+        def reset_cache(self) -> None:
+            self.reset_calls += 1
+
+        def get_page_acl(self, *, page_id: str, space_key: str) -> tuple[list[str], list[str]]:
+            return ["g"], []
+
+    provider = _ResetSpyAclProvider()
+    runner = _fake_runner(changed=[_changed("page-1")], deleted=[], failed=[])
+
+    run_delta_sync(
+        _request(),
+        raw_store=FakeRawPageStore(),
+        publisher=FakeQueuePublisher(),
+        workflow_runner=runner,
+        acl_provider=provider,
+    )
+    run_delta_sync(
+        _request(),
+        raw_store=FakeRawPageStore(),
+        publisher=FakeQueuePublisher(),
+        workflow_runner=runner,
+        acl_provider=provider,
+    )
+
+    assert provider.reset_calls == 2

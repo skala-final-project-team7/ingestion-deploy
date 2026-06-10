@@ -1,9 +1,9 @@
 # LINA Data Ingestion Pipeline
 
-![Last commit](https://img.shields.io/github/last-commit/skala-final-project-team7/ingestion?style=flat-square)
-![Issues](https://img.shields.io/github/issues/skala-final-project-team7/ingestion?style=flat-square)
-![PRs](https://img.shields.io/github/issues-pr/skala-final-project-team7/ingestion?style=flat-square)
-![Top language](https://img.shields.io/github/languages/top/skala-final-project-team7/ingestion?style=flat-square)
+![Last commit](https://img.shields.io/github/last-commit/skala-final-project-team7/ingestion-deploy?style=flat-square)
+![Issues](https://img.shields.io/github/issues/skala-final-project-team7/ingestion-deploy?style=flat-square)
+![PRs](https://img.shields.io/github/issues-pr/skala-final-project-team7/ingestion-deploy?style=flat-square)
+![Top language](https://img.shields.io/github/languages/top/skala-final-project-team7/ingestion-deploy?style=flat-square)
 
 ![Python 3.11](https://img.shields.io/badge/Python_3.11-3776AB?style=flat-square&logo=python&logoColor=white)
 ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-FF6600?style=flat-square&logo=rabbitmq&logoColor=white)

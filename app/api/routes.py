@@ -51,8 +51,8 @@ _LOGGER = logging.getLogger(__name__)
 # api-spec "시간 표기 정책" — 응답 timestamp 는 KST(+09:00)로 절대 전환해 반환한다.
 _KST = timezone(timedelta(hours=9))
 
-# 허용 수집 모드(api-spec §2-2). 2단계 PoC 는 둘 다 full crawl 합성 파이프라인으로 처리하며,
-# delta(변경분) 의 sync 에이전트 배선은 후속이다.
+# 허용 수집 모드(api-spec §2-2). full 은 전체 크롤, delta 는 Delta Sync(FR-005, 2026-06-09
+# 배선 — ``deps.run_delta``)로 분기한다(``ingest_route`` 의 mode 분기 참조).
 _ALLOWED_MODES: frozenset[str] = frozenset({"full", "delta"})
 
 router = APIRouter()
@@ -82,6 +82,14 @@ class IngestRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     mode: str = Field(default="full", description="수집 모드 — full(전체) | delta(변경분)")
+    # api-spec v2.5.0 §2-2 — jobId 는 "BFF 가 생성하거나 Data Ingestion Pipeline 이 생성해
+    # 반환"한다. BFF 가 보낸 값은 그대로 잡 식별자로 사용해 completion event·status 조회·
+    # Admin Key deactivate idempotency 의 기준을 일치시키고, 없으면 서버가 발급한다.
+    job_id: str | None = Field(
+        default=None,
+        alias="jobId",
+        description="작업 식별자(BFF 생성 시 전달). 없으면 Pipeline 이 발급해 반환한다.",
+    )
     admin_user_id: str | None = Field(
         default=None,
         alias="adminUserId",
@@ -287,8 +295,20 @@ async def ingest_route(
     ``mode=full``(기본)은 admin Key 로 접근 가능한 전체 스페이스를 수집하고, ``mode=delta``는 직전
     스냅샷 대비 변경분만 Delta Sync 한다(FR-005). terminal(COMPLETED/FAILED) 상태 도달 시
     credential 없는 completion event 를 발행한다(v2.5.0 — Admin Key 말소 트리거).
+
+    ``jobId``(§2-2)가 본문에 오면 그 값을 잡 식별자로 사용한다. 같은 ``jobId`` 재요청은
+    잡을 새로 만들지 않고 기존 잡의 현재 상태를 반환한다(idempotent — completion event
+    중복 처리 정책과 정합. 단일 인스턴스 전제는 InMemoryIngestJobStore 와 동일).
     """
-    job = deps.job_store.create()
+    if payload.job_id:
+        existing = deps.job_store.get(payload.job_id)
+        if existing is not None:
+            return {
+                "jobId": existing.job_id,
+                "status": existing.status.value,
+                "startedAt": _to_kst(existing.started_at),
+            }
+    job = deps.job_store.create(job_id=payload.job_id)
     # mode 분기: ``delta`` 는 Delta Sync(vendored Data Sync Agent 래퍼)로, 그 외(``full``)는
     # full-crawl 합성으로 처리한다. credential 은 요청 객체로만 전달하고 로그·응답에 남기지 않는다.
     # ``adminUserId``(credential 아님)는 terminal completion event 식별자로 전달한다.

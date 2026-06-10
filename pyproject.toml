@@ -53,8 +53,8 @@ dev = [
     "ruff>=0.5",
     "mypy>=1.10",
 ]
-# Vendored Data Ingestion / Data Sync Agent 의 LangGraph workflow (선택). 미설치 시 두
-# 에이전트 모두 sequential fallback 으로 동작하므로 필수 의존성은 아니다(원본 무수정 vendoring).
+# ai-agent(lina-ai-agents)로 설치되는 Data Ingestion / Data Sync Agent 의 LangGraph
+# workflow (선택). 미설치 시 두 에이전트 모두 sequential fallback 으로 동작한다.
 agents = [
     "langgraph>=0.2,<0.3",
 ]

@@ -5,11 +5,15 @@
 작성목적 : 첨부 바이너리(PDF/Word/Excel/CSV)를 텍스트로 추출하는 결정론 Pipeline 의 진입점.
           유형별 추출기(pdf/docx/spreadsheet)로 디스패치하고, 추출 실패는 쿼리 전체 실패로
           전파하지 않고 ``ok=False``/``reason`` 으로 격리한다(graceful degrade). 이미지·도형은
-          제외하고 텍스트만 추출한다(FR-002). 첨부 수집기·attachment_texts 적재·큐 배선은
-          후속(featureI-3b — docs/ai/current-plan.md).
+          제외하고 텍스트만 추출한다(FR-002).
+          NOTE: 운영 첨부 청킹 경로는 파일 기반 ``chunk_attachment``(다운로더가 채운
+          ``local_path`` 직접 읽기)다 — 본 모듈은 **bytes 입력용 추출 seam** 으로 유지된다
+          (파일로 내려받지 않는 공급원·스트림 추출용. 현재 프로덕션 배선 없음).
 작성일 : 2026-05-26 (stub → featureI-3 구현)
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-05-26, featureI-3, 유형별 추출 디스패치 + graceful degrade 구현.
+  - 2026-06-10, 배포 전 점검 — attachment_texts 잔존 참조 제거, 운영 경로(파일 기반
+    chunk_attachment)와의 관계 명시(bytes 기반 보조 seam).
 --------------------------------------------------
 [보안] reason 에는 예외 타입명만 남기고 첨부 내용·자격증명을 포함하지 않는다.
 --------------------------------------------------

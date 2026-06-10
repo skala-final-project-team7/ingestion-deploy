@@ -47,10 +47,10 @@
 
 | 컴포넌트 | FR | 패키지/모듈 | 상태 |
 |---|---|---|---|
-| Data Ingestion Agent (Full Crawl) | FR-001 | `data_ingestion_agent/`(vendored) ↔ `app/adapters/atlassian.py` + `app/ingestion/crawler.py` | 통합 완료(featureI-6) |
-| Data Sync Agent (Delta/삭제) | FR-005 | `data_sync_agent/`(vendored) ↔ `app/ingestion/sync.py`(`run_delta_sync`) ↔ `app/api/routes.py`(`/ml/ingest` mode=delta) | 통합 완료(featureI-6) + HTTP delta 라우팅 배선 / Reconciliation 복사 유지 |
+| Data Ingestion Agent (Full Crawl) | FR-001 | `data_ingestion_agent`(lina-ai-agents 설치) ↔ `app/adapters/atlassian.py` + `app/ingestion/crawler.py` | 통합 완료(featureI-6) |
+| Data Sync Agent (Delta/삭제) | FR-005 | `data_sync_agent`(lina-ai-agents 설치) ↔ `app/ingestion/sync.py`(`run_delta_sync`) ↔ `app/api/routes.py`(`/ml/ingest` mode=delta) | 통합 완료(featureI-6) + HTTP delta 라우팅 배선 / Reconciliation 복사 유지 |
 | Sync Worker (soft-delete 트리거) | FR-005 | `app/ingestion/workers/sync_worker.py` + `app/ingestion/soft_delete.py` + `app/adapters/confluence_trash.py` + `POST /ml/confluence/webhook` | featureI-5b — Delta 확인 게이트·Trash API·Webhook → `apply_soft_deletes`(`is_deleted`). 주기 구동·실행 loop 는 featureI-7c |
-| 첨부 텍스트 추출기·다운로더 | FR-002 | `app/ingestion/extractor/` + `app/ingestion/attachment_downloader.py` | 추출기 코어(featureI-3) + 다운로더(`Noop`/`Http`, download_url→local_path) 배선 + bootstrap 실 branch 주입(`build_attachment_downloader`). 텍스트는 `raw_attachments.extracted_text` 에 보존(별도 attachment_texts 미사용 — db-schema §2.7). **실 어댑터 첨부 메타(download_url) 수집은 후속** |
+| 첨부 텍스트 추출기·다운로더 | FR-002 | `app/ingestion/extractor/` + `app/ingestion/attachment_downloader.py` | 다운로더(`Noop`/`Http`, download_url→local_path) 배선 + bootstrap 실 branch 주입(`build_attachment_downloader`) — 운영 첨부 청킹은 파일 기반 `chunk_attachment`(local_path 직접 읽기). `extractor/` 는 bytes 입력용 추출 seam(featureI-3, 프로덕션 배선 없음). 텍스트는 `raw_attachments.extracted_text` 에 보존(별도 attachment_texts 미사용 — db-schema §2.7). **실 어댑터 첨부 메타(download_url) 수집은 후속** |
 | 문서·첨부 분석기 | FR-003 | `app/ingestion/document_analyzer.py`(신규 [Agent]) · `attachment_analyzer.py`(복사 Pipeline) | 문서 분석기[Agent] 구현(featureI-4b, GPT-4o-mini+캐싱). 첨부 분석기 복사 |
 | Adaptive Chunker | FR-003 | `app/ingestion/chunker/` | 복사 완료 (본문 6유형 + 첨부 3유형) |
 | Dual Embedding | FR-004 | `app/ingestion/embedder/`, `embedding.py` | 복사 완료 |
@@ -79,14 +79,15 @@
   RAG의 검색 단계와 **계약을 공유**하므로, 변경 시 양 레포(`docs/db-schema.md`)를 함께 갱신한다.
 - 향후 공통 자산을 공유 패키지로 분리할지 여부는 `docs/ai/current-plan.md`에서 결정한다.
 
-## 5. 외부 에이전트 vendoring (featureI-6)
+## 5. 외부 에이전트 통합 (featureI-6 — 배포 레포는 설치형)
 
-- Data Ingestion Agent(FR-001)·Data Sync Agent(FR-005)는 별도 레포에서 개발된 독립
-  패키지로, 저장소 루트에 **무수정 vendoring** 한다: `data_ingestion_agent/`,
-  `data_sync_agent/`. 테스트·스크립트는 `tests/<agent>/` 아래에 무수정 배치(pytest 패키지
-  마커 `__init__.py`만 추가). `pyproject.toml` 의 `packages.find.include` 에 노출하고,
-  `[tool.ruff] extend-exclude` / `[tool.mypy] exclude` 로 원본을 lint·typecheck 대상에서 제외한다.
-- ingestion 본체는 vendored 코드를 **직접 호출하지 않고** 얇은 어댑터로만 연결한다:
+- Data Ingestion Agent(FR-001)·Data Sync Agent(FR-005)는 별도 `ai-agent` 레포가 소유한
+  독립 패키지다. **본 배포 레포는 vendoring 하지 않고** `lina-ai-agents @ git+…@v0.1.0`
+  외부 의존성으로 설치한다(top-level 패키지명 `data_ingestion_agent`/`data_sync_agent`
+  동일 — import 무변경. `INTEGRATION.md` §1~§3). 에이전트 테스트·lint 는 ai-agent 레포
+  소관이라 본 레포 `pyproject.toml` 에 별도 노출/제외 설정이 없다.
+  (개발 원본 `ingestion` 레포는 동일 패키지를 저장소 루트에 무수정 vendoring 한다.)
+- ingestion 본체는 에이전트 코드를 **직접 호출하지 않고** 얇은 어댑터로만 연결한다:
   - `app/adapters/atlassian.py` `AtlassianSourceAdapter` → vendored `run_full_crawl_workflow`
     를 in-process 블랙박스 호출 후 산출 `ProcessedDocument` 를 표준 `PageObject` 로 변환.
   - `app/ingestion/sync.py` `run_delta_sync` → vendored `run_data_sync_workflow` 를 호출 후

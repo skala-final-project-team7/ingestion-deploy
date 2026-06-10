@@ -51,7 +51,7 @@ def build_point_payload(chunk: Chunk, version_number: int) -> dict[str, Any]:
     PageObject에서 받아 별도 인자로 주입한다 — 재색인 시 멱등성 검사용.
 
     Args:
-        chunk: 적재할 청크 (본문 텍스트 + 메타데이터 19종).
+        chunk: 적재할 청크 (본문 텍스트 + 메타데이터 21종).
         version_number: 청크 부모 페이지의 버전. 재색인 멱등성 검사 키.
 
     Returns:

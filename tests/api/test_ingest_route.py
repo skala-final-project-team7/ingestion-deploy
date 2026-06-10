@@ -339,3 +339,45 @@ async def test_ingest_delta_does_not_soft_delete_when_not_confirmed() -> None:
 
     assert status_resp.json()["status"] == "COMPLETED"
     assert store.deleted_pages == []  # confirm=False → 미적용
+
+
+# --- 배포 전 점검(2026-06-10) — spec §2-2 요청 jobId 수용 + idempotent 재요청 ---
+
+
+@pytest.mark.asyncio
+async def test_ingest_honors_bff_generated_job_id() -> None:
+    """spec §2-2 — 본문 jobId(BFF 생성)가 잡 식별자로 그대로 사용된다.
+
+    completion event·status 조회·Admin Key deactivate idempotency 가 모두 jobId 기준이라
+    BFF 가 생성한 값을 무시하면 식별자 체계가 어긋난다.
+    """
+    deps = _stub_deps()
+    async with _client(deps) as client:
+        resp = await client.post("/ml/ingest", json={"mode": "full", "jobId": "job-bff-001"})
+        assert resp.status_code == 200
+        assert resp.json()["jobId"] == "job-bff-001"
+
+        status_resp = await client.get("/ml/ingest/status/job-bff-001")
+    assert status_resp.status_code == 200
+    assert status_resp.json()["status"] == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_ingest_duplicate_job_id_is_idempotent() -> None:
+    """같은 jobId 재요청은 잡을 새로 만들지 않고 기존 잡 상태를 반환한다."""
+    deps = _stub_deps()
+    async with _client(deps) as client:
+        first = await client.post("/ml/ingest", json={"mode": "full", "jobId": "job-dup-01"})
+        assert first.status_code == 200
+        # ASGITransport 특성상 첫 잡은 이미 COMPLETED — 재요청은 그 상태를 그대로 반환.
+        second = await client.post("/ml/ingest", json={"mode": "full", "jobId": "job-dup-01"})
+        assert second.status_code == 200
+        body = second.json()
+        assert body["jobId"] == "job-dup-01"
+        assert body["status"] == "COMPLETED"
+
+        status_resp = await client.get("/ml/ingest/status/job-dup-01")
+    # 재요청이 카운트를 초기화/중복 집계하지 않았다(잡 1회 실행분 그대로).
+    status = status_resp.json()
+    assert status["totalPages"] == 4
+    assert status["processedPages"] == 3

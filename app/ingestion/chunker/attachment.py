@@ -150,9 +150,12 @@ def _resolve_attachment_path(attachment: Attachment) -> str:
         return attachment.local_path
     url = attachment.download_url
     if url.startswith("file://"):
-        from urllib.parse import urlparse
+        from urllib.parse import unquote, urlparse
 
-        return urlparse(url).path
+        # Path.as_uri() 는 비ASCII(한글 파일명 등)를 percent-encode 하므로 unquote 로
+        # 복원해야 실제 파일 경로가 된다(배포 전 점검 2026-06-10 — 픽스처 첨부 4종이
+        # 모두 한글 파일명이라 local_path 부재 시 그대로 열면 실패하던 잠복 결함).
+        return unquote(urlparse(url).path)
     return url
 
 
@@ -613,7 +616,7 @@ def build_attachment_metadata(
     chunk_index: int,
     attachment_type: AttachmentType,
 ) -> ChunkMetadata:
-    """첨부 ChunkDraft에 청크 메타데이터 19종을 부착한다.
+    """첨부 ChunkDraft에 청크 메타데이터 21종을 부착한다.
 
     무결성 규칙(chunking-strategy.md §6.3):
     - source_type=attachment, attachment_*·extracted_format 채움
@@ -626,10 +629,10 @@ def build_attachment_metadata(
         attachment: 청크의 출처 첨부 객체.
         draft: 1차 분할(필요 시 크기 규칙)을 거친 ChunkDraft.
         chunk_index: 동일 첨부 내 0-based 순번.
-        attachment_type: 첨부 유형 (docx/xlsx).
+        attachment_type: 첨부 유형 (pdf/docx/xlsx/csv).
 
     Returns:
-        19종 필드가 채워진 ChunkMetadata.
+        21종 필드가 채워진 ChunkMetadata.
     """
     section_header = draft.section_header.strip() or "untitled"
     section_path = " > ".join([*page.ancestors, attachment.filename, section_header])

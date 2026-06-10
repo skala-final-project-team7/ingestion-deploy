@@ -540,9 +540,7 @@ def test_ancestor_walk_caches_shared_ancestor_restrictions() -> None:
     provider = ConfluenceRestrictionAclProvider(client=client)
 
     for page_id in ("page-1", "page-2", "page-3"):
-        groups, _ = provider.get_page_acl(
-            page_id=page_id, space_key="ENG", ancestor_ids=["anc-1"]
-        )
+        groups, _ = provider.get_page_acl(page_id=page_id, space_key="ENG", ancestor_ids=["anc-1"])
         assert groups == ["team-a"]
 
     assert client.restriction_calls.count("anc-1") == 1
@@ -553,9 +551,7 @@ def test_ancestor_walk_disabled_restores_legacy_policy_fallback() -> None:
     client = _FakeRestrictionWalkClient(restrictions={"anc-1": _restricted_raw("team-a")})
     provider = ConfluenceRestrictionAclProvider(client=client, ancestor_lookup_enabled=False)
 
-    groups, users = provider.get_page_acl(
-        page_id="page-1", space_key="ENG", ancestor_ids=["anc-1"]
-    )
+    groups, users = provider.get_page_acl(page_id="page-1", space_key="ENG", ancestor_ids=["anc-1"])
 
     assert (groups, users) == ([], [])
     assert "anc-1" not in client.restriction_calls
@@ -568,9 +564,7 @@ def test_ancestor_walk_detail_failure_degrades_to_policy() -> None:
         def get_page_detail(self, page_id: str) -> dict[str, Any]:
             raise RuntimeError("boom")
 
-    provider = ConfluenceRestrictionAclProvider(
-        client=_BrokenDetailClient(restrictions={})
-    )
+    provider = ConfluenceRestrictionAclProvider(client=_BrokenDetailClient(restrictions={}))
 
     groups, users = provider.get_page_acl(page_id="page-1", space_key="ENG")
 
@@ -626,3 +620,109 @@ def test_adapter_maps_space_id_and_name_to_page_object() -> None:
 
     assert page.space_id == "space-001"
     assert page.space_name == "Engineering"
+
+
+# --- 배포 전 점검(2026-06-10) — ACL 캐시 런 단위 초기화 + restriction 실패 페이지 격리 ---
+
+
+def test_reset_cache_refetches_restrictions_after_change() -> None:
+    """reset_cache() 후에는 변경된 restriction 이 다시 조회된다(런 간 캐시 잔존 방지).
+
+    provider 는 startup 1회 생성되어 잡 간 재사용되므로, 캐시를 런 단위로 비우지
+    않으면 Confluence 권한 변경이 재수집에 반영되지 않는다(over/under-grant).
+    """
+    client = _FakeRestrictionWalkClient(restrictions={"page-1": _restricted_raw("old-team")})
+    provider = ConfluenceRestrictionAclProvider(client=client)
+
+    groups, _ = provider.get_page_acl(page_id="page-1", space_key="ENG")
+    assert groups == ["old-team"]
+
+    # 권한 변경 후 캐시 잔존 — 같은 런 안에서는 메모이즈가 정상이다.
+    client.restrictions["page-1"] = _restricted_raw("new-team")
+    groups, _ = provider.get_page_acl(page_id="page-1", space_key="ENG")
+    assert groups == ["old-team"]
+
+    # 런 시작(reset_cache) 후에는 새 restriction 을 본다.
+    provider.reset_cache()
+    groups, _ = provider.get_page_acl(page_id="page-1", space_key="ENG")
+    assert groups == ["new-team"]
+
+
+def test_fetch_pages_resets_provider_cache_per_run() -> None:
+    """fetch_pages 는 런 시작 시 provider.reset_cache() 를 호출한다(잡 간 재사용 대비)."""
+
+    class _ResetSpyProvider:
+        supports_ancestor_ids = True
+
+        def __init__(self) -> None:
+            self.reset_calls = 0
+
+        def reset_cache(self) -> None:
+            self.reset_calls += 1
+
+        def get_page_acl(
+            self,
+            *,
+            page_id: str,
+            space_key: str,
+            ancestor_ids: Any = None,
+        ) -> tuple[list[str], list[str]]:
+            return ["g"], []
+
+    provider = _ResetSpyProvider()
+    client = _FakeConfluenceClient(
+        spaces=[_space()],
+        descendants_by_homepage={"home-001": [_page_ref()]},
+        details_by_page={"page-001": _page_detail()},
+    )
+    adapter = AtlassianSourceAdapter(
+        cloud_id="cloud-synthetic",
+        access_token="token-synthetic",
+        client=client,
+        acl_provider=provider,  # type: ignore[arg-type]
+        request_delay_seconds=0,
+    )
+
+    list(adapter.fetch_pages())
+    list(adapter.fetch_pages())
+
+    assert provider.reset_calls == 2
+
+
+def test_resolve_acl_provider_failure_degrades_fail_closed() -> None:
+    """restriction 조회 하드 실패는 페이지 단위로 빈 ACL(fail-closed) 강등된다.
+
+    1건의 API 실패가 full crawl 잡 전체를 FAILED 로 만들지 않고(delta A13 정합),
+    빈 ACL 페이지는 chunking 의 INVALID_ACL 게이트가 색인에서 제외한다.
+    """
+
+    class _FailingProvider:
+        supports_ancestor_ids = True
+
+        def get_page_acl(
+            self,
+            *,
+            page_id: str,
+            space_key: str,
+            ancestor_ids: Any = None,
+        ) -> tuple[list[str], list[str]]:
+            raise RuntimeError("restriction API 5xx — 재시도 소진")
+
+    client = _FakeConfluenceClient(
+        spaces=[_space()],
+        descendants_by_homepage={"home-001": [_page_ref()]},
+        details_by_page={"page-001": _page_detail()},
+    )
+    adapter = AtlassianSourceAdapter(
+        cloud_id="cloud-synthetic",
+        access_token="token-synthetic",
+        client=client,
+        acl_provider=_FailingProvider(),  # type: ignore[arg-type]
+        request_delay_seconds=0,
+    )
+
+    pages = list(adapter.fetch_pages())
+
+    assert len(pages) == 1
+    assert (pages[0].allowed_groups, pages[0].allowed_users) == ([], [])
+    assert pages[0].is_acl_missing

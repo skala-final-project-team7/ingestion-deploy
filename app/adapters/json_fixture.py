@@ -10,10 +10,11 @@
   - 2026-05-15, 최초 작성, feature2 — JsonFixtureSourceAdapter + Atlassian 포맷 매핑
   - 2026-05-17, 코드 리뷰 후속(P1-3) — download_url을 file:// URI(사용자 노출용)로 두고,
     청커가 직접 열 로컬 경로는 local_path 필드에 분리 매핑 (ADR-2026-001)
+  - 2026-06-10, 코드 리뷰 재점검(P1-3) — 첨부 docstring 정합: extracted_text 는 빈 값 유지,
+    분석기가 빈 텍스트+local_path 를 파일 기반 추출(chunk_attachment)로 위임함을 명시.
   - 2026-06-10, 코드 리뷰 재점검(P1-6) — 픽스처 파일 부재 시 경로·설정 힌트를 담은
     FileNotFoundError 로 즉시 표면화(기본 ingest 가 원인 불명 FAILED 로 죽던 문제).
-  - 2026-06-10, A8 잔여 — raw["space"].id/name → PageObject.space_id/space_name 매핑
-    (+P1-3 위임 문구를 rag 레포와 동일하게 정정).
+  - 2026-06-10, A8 잔여 — raw["space"].id/name → PageObject.space_id/space_name 매핑.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, Pydantic 2.7+
@@ -77,7 +78,8 @@ class JsonFixtureSourceAdapter(DocumentSourceAdapter):
     샘플 JSON은 첨부 메타(filename/content_type)만 가진다. 누락 필드는 합성하며,
     청커가 직접 열 실제 경로를 ``local_path`` 에 채운다(ADR-2026-001 — 파일 기반 추출이
     정공법). ``extracted_text`` 는 빈 문자열로 두며, 분석기는 빈 텍스트 + local_path
-    조합을 파일 기반 추출(chunk_attachment)로 위임한다(P1-3).
+    조합을 파일 기반 추출(chunk_attachment)로 위임한다(P1-3 — 분석기·어댑터 누구도
+    텍스트를 추출하지 않는다).
     """
 
     def __init__(

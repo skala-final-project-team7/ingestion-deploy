@@ -11,7 +11,7 @@
 ## 2. 에이전트 의존성
 ```toml
 # pyproject.toml [project].dependencies
-"lina-ai-agents @ git+https://github.com/skala-final-project-team7/ai-agent.git@main",
+"lina-ai-agents @ git+https://github.com/skala-final-project-team7/ai-agent.git@v0.1.0",
 ```
 app은 2개 에이전트를 **top-level 패키지명**으로 import한다(소스 6곳): `data_ingestion_agent`, `data_sync_agent`. ai-agent가 이 이름을 그대로 노출하면 import는 **무변경**으로 해결된다.
 
@@ -29,10 +29,12 @@ app은 2개 에이전트를 **top-level 패키지명**으로 import한다(소스
 
 ## 4. 빌드/검증 (Python 3.11)
 ```bash
-pip install -e '.[embedding,ingestion]'   # ai-agent v0.1.0 의존성 포함 (§3 해소됨)
+pip install -e '.[embedding,ingestion,dev]'   # ai-agent v0.1.0 + 파서 + ruff/pytest
 python -c "import app.api.main"            # 에이전트 import 해결 = ai-agent 설치 확인
 ./scripts/verify.sh                        # format → lint → test
 ```
+
+> `verify.sh` 는 ruff·pytest 를 요구하므로 `dev` extra 가 필요하다.
 > 비동기 워커(RabbitMQ consumer)는 인프라 소유 실행 loop (HANDOFF §4 Infra, featureI-7c).
 
 ## 5. 참고 문서 (원본 워크스페이스)

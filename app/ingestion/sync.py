@@ -221,6 +221,12 @@ def run_delta_sync(
         함수는 후보 page_id 만 반환한다.
     """
     runner = workflow_runner or _default_delta_workflow_runner()
+    # 런 단위 ACL 캐시 초기화 — provider 는 잡 간 재사용되므로(full crawl fetch_pages 와
+    # 동일 규칙), 직전 런이 캐시한 restriction 이 이번 delta 의 ACL 산출에 재사용되지
+    # 않게 한다(권한 변경 반영).
+    reset_cache = getattr(acl_provider, "reset_cache", None)
+    if callable(reset_cache):
+        reset_cache()
     started = time.monotonic()
     output_dir = tempfile.mkdtemp(prefix="sync-agent-")
     try:
