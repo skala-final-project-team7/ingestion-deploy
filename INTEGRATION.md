@@ -40,4 +40,4 @@ python -c "import app.api.main"            # 에이전트 import 해결 = ai-age
 ## 5. 참고 문서 (원본 워크스페이스)
 - `HANDOFF-ML-2026-06-09.md` — 인프라 seam·운영 기본값 §4·§5
 - `SHARED-SURFACE-2026-06-09.md` — `lina-shared` 공유표면 추출(별개 작업, 미포함)
-- `rag/docs/api-spec.md` (v2.5.0) — 정본 계약
+- `rag/docs/api-spec.md` (v2.6.0) — 정본 계약
