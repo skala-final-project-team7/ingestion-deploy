@@ -15,20 +15,21 @@
 ```
 app은 2개 에이전트를 **top-level 패키지명**으로 import한다(소스 6곳): `data_ingestion_agent`, `data_sync_agent`. ai-agent가 이 이름을 그대로 노출하면 import는 **무변경**으로 해결된다.
 
-## 3. ⚠️ ai-agent 레포 선행 수정 (이게 안 되면 `pip install` 충돌)
-`skala-final-project-team7/ai-agent`(현 main `f9f458c`) 패키징을 직접 조사한 결과:
+## 3. ✅ ai-agent 레포 선행 수정 — 해소됨 (2026-06-10)
+`skala-final-project-team7/ai-agent` 커밋 `54055df` · 태그 **`v0.1.0`** 에서 아래 3건이 모두 반영됐다
+(태그 시점 pyproject 직접 확인 — name/`packages.find` 검증 완료):
 
-| # | 문제 | 현재 ai-agent | 필요한 수정 |
-|---|---|---|---|
-| 1 | **`app` 패키지 충돌** | `packages.find.include`에 `"app*"` 포함 | ai-agent에서 `app*` 제외 → 6개 에이전트 패키지만 노출 |
-| 2 | **핀 가변** | release tag 없음 (이 의존성은 `@main`) | tag 발행 후 여기 `@main`을 `@<tag>`로 교체 |
-| 3 | (rag 공통) **배포 이름** | 루트 pyproject `name = "lina-rag-pipeline"` | `lina-ai-agents`로 변경 — rag-deploy의 self-collision 해소용. 동일 ai-agent를 두 레포가 공유하므로 함께 적용 |
+| # | 문제(당시 main `f9f458c`) | 적용된 수정 (v0.1.0) |
+|---|---|---|
+| 1 | `app` 패키지 충돌 — `packages.find.include`에 `"app*"` 포함 | `app*` 제거, 6개 에이전트 패키지만 노출 ✅ |
+| 2 | 핀 가변 — release tag 없음(`@main`) | 태그 `v0.1.0` 발행, 본 레포 의존성 핀 `@v0.1.0` 으로 교체 완료 ✅ |
+| 3 | (rag 공통) 배포 이름 `lina-rag-pipeline` | `lina-ai-agents` 로 변경 ✅ |
 
-> ingestion-deploy 자체 이름은 `lina-data-ingestion-pipeline`이라 #3 이름 충돌은 직접 발생하지 않으나, ai-agent를 rag와 공유하므로 #3도 함께 처리하는 게 맞다. #1(`app*` 제외)은 ingestion에도 필수다.
+> top-level 에이전트 패키지명 6종(data_ingestion_agent/data_sync_agent 포함)은 무변경 — app 코드 import 그대로 동작.
 
 ## 4. 빌드/검증 (Python 3.11)
 ```bash
-pip install -e '.[embedding,ingestion]'   # ai-agent 의존성 포함 (§3 선행 필요)
+pip install -e '.[embedding,ingestion]'   # ai-agent v0.1.0 의존성 포함 (§3 해소됨)
 python -c "import app.api.main"            # 에이전트 import 해결 = ai-agent 설치 확인
 ./scripts/verify.sh                        # format → lint → test
 ```
