@@ -10,6 +10,9 @@
   - 2026-05-15, 최초 작성, feature3-A — ChunkDraft / split_oversized / merge_undersized
   - 2026-05-15, 하한선 병합 붕괴 버그 수정, merge_undersized가 하한선을 채운 직전 청크를
     '봉인'하도록 변경 — 작은 청크가 한 청크로 무한 누적되던 문제 해결 (feature4-A 중 발견)
+  - 2026-06-10, 코드 리뷰 재점검(P2-9) — OVERSIZE_ATOMIC 강제 분할 구현. 원자성 청크도
+    ATOMIC_MAX_TOKENS(1500) 초과 시 강제 분할하고 section_header 에 ``(Part N/M)`` 을
+    표기한다(chunking-strategy.md §8 — 종전에는 전부 스킵되어 임베딩 입력 윈도를 초과).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -24,6 +27,9 @@ from app.ingestion.chunker.tokenizer import count_tokens
 MAX_TOKENS = 800  # 2차 재분할 임계
 OVERLAP_TOKENS = 100  # 2차 재분할 오버랩
 MIN_TOKENS = 200  # 하한선 병합 임계
+# chunking-strategy.md §8 — OVERSIZE_ATOMIC: 원자성 유형도 이 임계를 초과하면 강제 분할
+# (+ ``Part N/M`` 표기). 임베딩 입력 윈도(e5 권장 512~1024) 초과 방지의 안전망이다.
+ATOMIC_MAX_TOKENS = 1500
 
 
 @dataclass
@@ -141,15 +147,40 @@ def merge_undersized(
 def apply_size_rules(drafts: list[ChunkDraft]) -> list[ChunkDraft]:
     """1차 분할 결과에 2차 재분할 → 하한선 병합을 순서대로 적용한다.
 
-    원자성 유지 유형(FAQ Q&A·ADR·회의록 안건·트러블슈팅 케이스)은 두 단계 모두 제외된다.
+    원자성 유지 유형(FAQ Q&A·ADR·회의록 안건·트러블슈팅 케이스)은 원칙적으로 두 단계
+    모두 제외되나, ``ATOMIC_MAX_TOKENS``(1500)를 초과하면 임베딩 입력 윈도 보호를 위해
+    강제 분할하고 ``section_header`` 에 ``(Part N/M)`` 을 표기한다(OVERSIZE_ATOMIC —
+    chunking-strategy.md §8, 코드 리뷰 P2-9). 분할된 파트는 원자성을 유지해 하한선
+    병합 대상이 되지 않는다.
     """
     after_split: list[ChunkDraft] = []
     for draft in drafts:
         if draft.is_atomic:
-            after_split.append(draft)
+            after_split.extend(_split_oversized_atomic(draft))
             continue
         for part in split_oversized(draft.text):
             after_split.append(
                 ChunkDraft(text=part, section_header=draft.section_header, is_atomic=False)
             )
     return merge_undersized(after_split)
+
+
+def _split_oversized_atomic(draft: ChunkDraft) -> list[ChunkDraft]:
+    """OVERSIZE_ATOMIC 강제 분할 — 1500토큰 초과 원자성 청크를 Part N/M 으로 나눈다.
+
+    임계 이하는 무수정 단일 원소로 반환한다(기존 동작 보존). 초과 시 본문 분할은
+    ``split_oversized``(800토큰 윈도 + 100토큰 오버랩)를 재사용해 각 파트가 임베딩
+    입력 윈도에 들어가게 한다.
+    """
+    if count_tokens(draft.text) <= ATOMIC_MAX_TOKENS:
+        return [draft]
+    parts = split_oversized(draft.text)
+    total = len(parts)
+    return [
+        ChunkDraft(
+            text=part,
+            section_header=f"{draft.section_header} (Part {index}/{total})",
+            is_atomic=True,
+        )
+        for index, part in enumerate(parts, start=1)
+    ]

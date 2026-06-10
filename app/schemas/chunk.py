@@ -44,8 +44,8 @@ def make_chunk_id(page_id: str, chunk_index: int, attachment_id: str | None = No
 class ChunkMetadata(BaseModel):
     """청크 메타데이터 19종 — 공통 13 + 첨부 5 + 검증 1 (chunking-strategy.md §6).
 
-    첨부 전용 5종(attachment_id/filename/mime, extracted_format)은 본문 청크에서
-    None이며, source_type은 모든 청크가 명시한다.
+    첨부 전용 4종(attachment_id/filename/mime, extracted_format)과 구분자 source_type 중
+    첨부 4종은 본문 청크에서 None이며, source_type은 모든 청크가 명시한다.
     """
 
     # --- 공통 13종 ---
@@ -63,7 +63,7 @@ class ChunkMetadata(BaseModel):
     allowed_users: list[str]
     webui_link: str
     last_modified: datetime
-    # --- 첨부 전용 5종 ---
+    # --- source_type 구분자 + 첨부 전용 4종 ---
     source_type: SourceType
     attachment_id: str | None = None
     attachment_filename: str | None = None

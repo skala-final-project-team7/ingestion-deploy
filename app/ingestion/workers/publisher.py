@@ -10,6 +10,9 @@
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-05-26, 최초 작성, featureI-6 — QueuePublisher ABC + FakeQueuePublisher +
     PikaQueuePublisher. crawler 의 Chunking Queue 발행 배선에 사용.
+  - 2026-06-10, 코드 리뷰 재점검(A10) — PikaQueuePublisher 발행을 persistent
+    (delivery_mode=2)로 변경. durable queue 여도 non-persistent 메시지는 브로커
+    재시작 시 유실된다(completion event = Admin Key 말소 트리거라 유실 불가).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -68,9 +71,15 @@ class PikaQueuePublisher(QueuePublisher):
         self._exchange = exchange
 
     def publish(self, *, routing_key: str, message: dict[str, Any]) -> None:
+        # lazy import — pika 미설치 환경에서도 모듈 import 가 깨지지 않게(ABC/Fake 사용 경로).
+        import pika
+
         body = json.dumps(message, ensure_ascii=False, sort_keys=True).encode("utf-8")
         self._channel.basic_publish(
             exchange=self._exchange,
             routing_key=routing_key,
             body=body,
+            # persistent(delivery_mode=2) — durable queue 와 함께여야 브로커 재시작에도
+            # 메시지가 살아남는다(A10 — completion event 유실 = Admin Key TTL 잔존).
+            properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
         )

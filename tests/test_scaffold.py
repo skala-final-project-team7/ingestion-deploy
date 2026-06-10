@@ -47,7 +47,11 @@ def test_extractor_implemented_contract() -> None:
 
 
 def test_worker_queue_names_defined() -> None:
-    """RabbitMQ 큐 이름 상수가 정의돼 있다(Worker 배선 전 계약)."""
+    """RabbitMQ 큐 이름 상수가 정의돼 있다(Worker 배선 전 계약).
+
+    P3-21 — 종전 set-literal truthiness 단언은 항상 참이라 회귀를 못 잡았다. 큐 이름이
+    비어 있지 않은 문자열이며 서로 겹치지 않는지(라우팅 키 충돌 방지)를 단언한다.
+    """
     from app.ingestion.workers import (
         QUEUE_ATTACHMENT,
         QUEUE_CHUNKING,
@@ -55,4 +59,8 @@ def test_worker_queue_names_defined() -> None:
         QUEUE_INGESTION,
     )
 
-    assert {QUEUE_INGESTION, QUEUE_ATTACHMENT, QUEUE_CHUNKING, QUEUE_EMBEDDING}
+    names = [QUEUE_INGESTION, QUEUE_ATTACHMENT, QUEUE_CHUNKING, QUEUE_EMBEDDING]
+    assert all(isinstance(name, str) and name for name in names)
+    assert len(set(names)) == len(names)  # 큐 이름은 서로 달라야 한다(라우팅 충돌 방지)
+    # crawler/sync 발행 경로가 사용하는 Chunking Queue 이름은 발행·소비 공유 계약으로 고정.
+    assert QUEUE_CHUNKING == "content.chunking"

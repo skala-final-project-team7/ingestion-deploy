@@ -2,6 +2,9 @@
 
 parse_confluence_delete_event(이벤트 유형별 파싱·비삭제 무시)와 라우트 end-to-end(soft-delete
 반영·ignored·잘못된 JSON 400)를 검증한다. store 는 실 FakeQdrantPoolStore 로 is_deleted 까지 확인.
+코드 리뷰 재점검(A18) 후속 — 옵션 공유 시크릿(``webhook_shared_secret``) 설정 시 X-Webhook-Secret
+헤더 검증(불일치/누락 401, 일치 200)도 검증한다(get_settings 는 lru_cache 라 env 주입 후
+cache_clear 로 반영하고 종료 시 원복한다).
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from app.api.deps import IngestDeps
 from app.api.main import create_app
 from app.api.routes import get_deps
 from app.api.webhook_routes import parse_confluence_delete_event
+from app.config import get_settings
 from app.ingestion.crawler import CrawlRequest, CrawlResult
 from app.ingestion.embedder.base import SparseVector
 from app.ingestion.vector_store import CONTENT_POOL
@@ -162,3 +166,61 @@ async def test_webhook_invalid_json_returns_400_envelope() -> None:
     body = resp.json()
     assert body["isSuccess"] is False
     assert body["errorCode"] == "INVALID_REQUEST"
+
+
+# --------------------------- 공유 시크릿 검증 (A18) ---------------------------
+
+_DELETE_PAYLOAD = {"event": "page_removed", "page": {"id": "P1"}}
+
+
+@pytest.mark.asyncio
+async def test_webhook_rejects_missing_or_wrong_secret_when_configured(monkeypatch) -> None:
+    """A18 — 시크릿 설정 시 X-Webhook-Secret 누락/불일치 요청은 401 로 거부(soft-delete 미적용)."""
+    monkeypatch.setenv("RAG_WEBHOOK_SHARED_SECRET", "topsecret")
+    get_settings.cache_clear()  # lru_cache 무효화 — 라우트가 주입 env 를 읽게 한다.
+    try:
+        deps, store = _deps_with_seeded_store()
+        async with _client(deps) as client:
+            missing = await client.post("/ml/confluence/webhook", json=_DELETE_PAYLOAD)
+            wrong = await client.post(
+                "/ml/confluence/webhook",
+                json=_DELETE_PAYLOAD,
+                headers={"X-Webhook-Secret": "wrong-secret"},
+            )
+
+        for resp in (missing, wrong):
+            assert resp.status_code == 401
+            body = resp.json()
+            assert body == {
+                "isSuccess": False,
+                "code": 401,
+                "errorCode": "UNAUTHORIZED",
+                "message": "webhook 시크릿이 일치하지 않습니다",
+            }
+        # 거부된 요청은 soft-delete 를 수행하지 않는다(임의 대량 soft-delete 방어).
+        assert store.points[CONTENT_POOL]["a" * 40].is_deleted is False
+    finally:
+        get_settings.cache_clear()  # 원복 — 다음 테스트가 기본(빈 시크릿) 설정을 보게 한다.
+
+
+@pytest.mark.asyncio
+async def test_webhook_accepts_matching_secret_when_configured(monkeypatch) -> None:
+    """A18 — 시크릿 설정 시 올바른 X-Webhook-Secret 헤더 요청은 기존대로 처리된다(200)."""
+    monkeypatch.setenv("RAG_WEBHOOK_SHARED_SECRET", "topsecret")
+    get_settings.cache_clear()
+    try:
+        deps, store = _deps_with_seeded_store()
+        async with _client(deps) as client:
+            resp = await client.post(
+                "/ml/confluence/webhook",
+                json=_DELETE_PAYLOAD,
+                headers={"X-Webhook-Secret": "topsecret"},
+            )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ignored"] is False
+        assert body["softDeleted"]["pageIds"] == ["P1"]
+        assert store.points[CONTENT_POOL]["a" * 40].is_deleted is True
+    finally:
+        get_settings.cache_clear()

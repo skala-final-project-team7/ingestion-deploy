@@ -41,7 +41,7 @@
 
 - 각 단계 Worker(Ingestion / Attachment Extractor / Chunking / Embedding)는 EKS에서 독립 스케일링한다.
 - RabbitMQ는 Quorum Queue 권장. 실패 페이지/첨부는 재시도 또는 DLQ 보류.
-- 잡 진행/결과는 MongoDB `import_jobs`(또는 `ingestion_jobs`)에 단계별 상태로 기록한다.
+- 잡 진행/결과는 MongoDB `ingestion_jobs`에 단계별 상태로 기록한다.
 
 ## 2. 패키지 매핑
 

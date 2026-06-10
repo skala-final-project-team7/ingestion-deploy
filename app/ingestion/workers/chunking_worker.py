@@ -19,6 +19,12 @@
     청킹 경로에 두지 않는다(extracted_text 는 raw_attachments 에 함께 적재).
   - 2026-06-09, FR-002 첨부 다운로더 배선 — ``ChunkingWorkerDeps.attachment_downloader`` 추가.
     chunk_attachment 전에 ``ensure_local`` 로 download_url→local_path 를 채운다(기본 None=생략).
+  - 2026-06-10, 코드 리뷰 재점검(A4·P1-2) — poison-message 격리 보강: (1) 다운로드 실패
+    (``AttachmentDownloadError``)를 첨부 단위 ``ATTACH_DOWNLOAD_FAILED`` 로 격리(전파 시
+    nack/DLQ 부재로 무한 재전송 루프). (2) 추출 라이브러리의 비-ValueError 예외(openpyxl
+    InvalidFileException·python-docx PackageNotFoundError·PyMuPDF FileDataError 등)도 첨부
+    단위 UNSUPPORTED_ATTACH_TYPE 로 격리. (3) malformed 메시지(평 KeyError)를 루프에서
+    메시지 단위 격리(ERROR 로그 후 skip).
 --------------------------------------------------
 구현 메모(featureI-4/I-3b):
   - 외부 의존성(임베더/Qdrant/cache/raw_store/jobs)은 주입 가능하게 둔다(테스트는 Fake).
@@ -42,7 +48,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.ingestion.attachment_analyzer import analyze_attachment
-from app.ingestion.attachment_downloader import AttachmentDownloader
+from app.ingestion.attachment_downloader import AttachmentDownloader, AttachmentDownloadError
 from app.ingestion.chunker import chunk_attachment, chunk_page
 from app.ingestion.indexer import index_chunks
 from app.ingestion.workers.consumer import MessageConsumer
@@ -243,10 +249,26 @@ def _process_attachment_message(
         )
 
     # 첨부 파일이 로컬에 없으면(운영 어댑터는 download_url 만 제공) 다운로더로 받아 local_path 를
-    # 채운다(FR-002). 다운로드 실패(AttachmentDownloadError)는 운영성 오류라 상위 루프가 재시도/DLQ
-    # 한다(RawPageNotFoundError 와 동일 — 격리 status 로 삼키지 않는다).
+    # 채운다(FR-002). 다운로드 실패는 다운로더 내부 제한 재시도를 소진한 결과이므로 첨부 단위로
+    # 격리한다(A4) — consumer 에 nack/DLQ 가 없어 전파 시 배치 중단 + 무한 재전송 poison 루프.
     if deps.attachment_downloader is not None:
-        attachment = deps.attachment_downloader.ensure_local(attachment)
+        try:
+            attachment = deps.attachment_downloader.ensure_local(attachment)
+        except AttachmentDownloadError as exc:
+            _record(
+                deps,
+                page_id,
+                IngestionStatus.ATTACH_DOWNLOAD_FAILED,
+                started_at,
+                error=str(exc),
+                stage=IngestionStage.CHUNK,
+                attachment_id=attachment_id,
+            )
+            return ChunkingMessageResult(
+                page_id=page_id,
+                status=IngestionStatus.ATTACH_DOWNLOAD_FAILED,
+                attachment_id=attachment_id,
+            )
 
     # 첨부 청킹 — chunk_attachment 는 첨부 파일을 직접 읽는다(테스트는 chunk_attachment_fn 주입).
     try:
@@ -268,6 +290,29 @@ def _process_attachment_message(
             attachment_id=attachment_id,
         )
         return ChunkingMessageResult(page_id=page_id, status=status, attachment_id=attachment_id)
+    except Exception as exc:  # noqa: BLE001 — 추출 라이브러리 예외 격리(P1-2)
+        # 손상 파일이 openpyxl InvalidFileException / python-docx PackageNotFoundError /
+        # PyMuPDF FileDataError 등 라이브러리 고유 예외를 던진다 — ValueError 만 잡으면
+        # 한 건이 페이지·배치 전체를 중단시키므로(poison) 첨부 단위로 격리한다.
+        _LOGGER.warning(
+            "chunking worker: 첨부 추출 실패로 첨부 단위 격리 — attachment_id=%s",
+            attachment_id,
+            exc_info=True,
+        )
+        _record(
+            deps,
+            page_id,
+            IngestionStatus.UNSUPPORTED_ATTACH_TYPE,
+            started_at,
+            error=f"{type(exc).__name__}: {exc}",
+            stage=IngestionStage.CHUNK,
+            attachment_id=attachment_id,
+        )
+        return ChunkingMessageResult(
+            page_id=page_id,
+            status=IngestionStatus.UNSUPPORTED_ATTACH_TYPE,
+            attachment_id=attachment_id,
+        )
 
     if not chunks:
         # 추출 가능했으나 청크가 0건(빈 첨부) — 적재 회피, SUCCESS 로 종결한다.
@@ -323,7 +368,9 @@ def run_chunking_worker(
 
     범위: 영구 실패의 durable DLQ 적재와 전이적(transient) 실패의 재시도 분리는 후속
     (featureI DLQ 정책)이다. 예상치 못한 예외는 무음 데이터 유실을 피하기 위해 그대로
-    전파한다(광역 ``except`` 로 삼키지 않는다).
+    전파한다(광역 ``except`` 로 삼키지 않는다). 단 **malformed 메시지(필수 키 누락 —
+    평 ``KeyError``)는 재시도해도 해소되지 않는 영구 실패**라 메시지 단위로 격리한다
+    (A4 — 전파 시 미ack 재전송 poison 루프).
     """
     results: list[ChunkingMessageResult] = []
     for message in consumer.consume():
@@ -334,6 +381,13 @@ def run_chunking_worker(
                 "chunking worker: 파이프라인 불일치로 메시지 1건 skip — %s: %s",
                 type(exc).__name__,
                 exc,
+            )
+        except KeyError as exc:
+            # 필수 키(page_id/attachment_id) 누락 메시지 — 발행자 버그/스키마 불일치.
+            _LOGGER.error(
+                "chunking worker: malformed 메시지 1건 skip — 누락 키 %s (keys=%s)",
+                exc,
+                sorted(message.keys()),
             )
     return results
 

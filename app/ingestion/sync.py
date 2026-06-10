@@ -13,6 +13,11 @@
   - 2026-05-18, 최초 작성, feature6 Phase 3 — ReconciliationResult 값 객체 +
     reconcile_deletions 함수. 7단계 흐름 정합. jobs 적재·스케줄링·알림은 호출자
     책임으로 분리.
+  - 2026-06-10, 코드 리뷰 재점검(A3·A13) — (1) ``run_delta_sync`` 에 ``acl_provider``
+    seam 추가: delta 재수집의 ACL 산출을 full crawl 과 통일해 restriction ACL 이
+    space 합성 ACL 로 덮이는 over/under-grant 차단. (2) 변경 페이지 루프에 페이지
+    단위 격리 추가(crawler.py 정합) — 1건 실패가 delta 잡 전체를 FAILED 로 만들지
+    않고 failed_items 로 집계된다.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -21,22 +26,32 @@
 --------------------------------------------------
 """
 
+from __future__ import annotations
+
+import logging
 import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
-from app.adapters.atlassian import synthesize_space_acl
+from app.adapters.atlassian import PageAclProvider, synthesize_space_acl
 from app.adapters.base import DocumentSourceAdapter
 from app.adapters.json_fixture import parse_atlassian_datetime
 from app.ingestion.crawler import build_chunking_message
 from app.ingestion.workers import QUEUE_CHUNKING
 from app.ingestion.workers.publisher import QueuePublisher
 from app.schemas.page_object import PageObject
-from app.storage.qdrant_client import QdrantPoolStore
 from app.storage.raw_store import RawPageStore
+
+if TYPE_CHECKING:
+    # 타입 전용 import — 런타임 import 시 app.storage ↔ app.ingestion 순환
+    # (storage/__init__ → qdrant_client → app.ingestion/__init__ → sync → qdrant_client)
+    # 이 생겨 단독 import 순서에 따라 부분 초기화 오류가 났다(2026-06-10 검증에서 발견).
+    from app.storage.qdrant_client import QdrantPoolStore
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +187,7 @@ def run_delta_sync(
     snapshot_repository: Any | None = None,
     workflow_runner: _DeltaSyncWorkflowRunner | None = None,
     force_sequential: bool = True,
+    acl_provider: PageAclProvider | None = None,
 ) -> DeltaSyncResult:
     """Delta Sync 실행 (FR-005).
 
@@ -190,6 +206,9 @@ def run_delta_sync(
         workflow_runner: delta sync workflow 호출자. 기본값은 vendored
             ``run_data_sync_workflow``. 테스트에서 교체 가능.
         force_sequential: True(기본)면 LangGraph 미사용 sequential 실행으로 결정론 보장.
+        acl_provider: page-level ACL provider seam — **full crawl 과 동일 객체를 주입**해
+            delta 재수집이 restriction ACL 을 space 합성 ACL 로 덮어쓰지 않게 한다
+            (코드 리뷰 A3). None 이면 PoC space_key 합성 폴백(full crawl 기본과 동일).
 
     Returns:
         변경·삭제 후보 집계를 담은 ``DeltaSyncResult``.
@@ -217,15 +236,35 @@ def run_delta_sync(
     for changed in result.changed_documents:
         if request.space_key and changed.space.get("space_key") != request.space_key:
             continue
-        page = _changed_document_to_page_object(changed)
-        raw_store.save_page(page)
-        publisher.publish(routing_key=QUEUE_CHUNKING, message=build_chunking_message(page))
+        # 페이지 단위 격리(코드 리뷰 A13) — full crawl(crawler.py)과 동일하게 매핑/적재/
+        # 발행 실패 1건이 delta 잡 전체를 죽이지 않게 한다. 실패 건은 failed_items 로
+        # 집계하고 다음 페이지로 진행한다(부분 발행 잔존 방지).
+        try:
+            page = _changed_document_to_page_object(changed, acl_provider=acl_provider)
+            raw_store.save_page(page)
+            publisher.publish(routing_key=QUEUE_CHUNKING, message=build_chunking_message(page))
+        except Exception:  # noqa: BLE001 — 페이지 단위 격리(매핑·적재·발행 전 구간)
+            _LOGGER.warning(
+                "delta sync: failed to process changed page (page_id=%s) — skipping",
+                _safe_changed_page_id(changed),
+                exc_info=True,
+            )
+            out.failed_items += 1
+            continue
         out.changed_pages += 1
 
     out.deleted_candidate_page_ids = sorted(item.page_id for item in result.deleted_items)
-    out.failed_items = len(result.failed_items)
+    out.failed_items += len(result.failed_items)
     out.elapsed_ms = int((time.monotonic() - started) * 1000)
     return out
+
+
+def _safe_changed_page_id(changed: Any) -> str:
+    """로그용 page_id 안전 추출 — 추출 자체가 실패해도 로깅이 깨지지 않게 한다."""
+    try:
+        return str(changed.page.get("page_id") or "<unknown>")
+    except Exception:  # noqa: BLE001 — 로깅 보조 경로
+        return "<unknown>"
 
 
 def _build_sync_config(request: DeltaSyncRequest, *, output_dir: str) -> Any:
@@ -247,18 +286,30 @@ def _default_delta_workflow_runner() -> _DeltaSyncWorkflowRunner:
     return runner
 
 
-def _changed_document_to_page_object(changed: Any) -> PageObject:
+def _changed_document_to_page_object(
+    changed: Any, *, acl_provider: PageAclProvider | None = None
+) -> PageObject:
     """vendored ChangedDocument(dict 기반 space/page/body) → 표준 PageObject 변환.
 
-    Full Crawl 어댑터와 동일 매핑·동일 PoC ACL 합성을 사용한다(공급원 무관 표준 계약).
+    Full Crawl 어댑터와 동일 매핑을 사용한다(공급원 무관 표준 계약). ACL 산출도
+    full crawl 과 경로를 통일한다(코드 리뷰 A3) — ``acl_provider`` 가 주입되면
+    page-level restriction 기반 ACL(``get_page_acl``)을, 없으면 PoC space_key 합성을
+    사용한다. raw_pages ``save_page`` 가 ``$set`` 전체 교체라, 여기서 space 합성으로
+    고정하면 delta 1회로 제한 페이지 ACL 이 덮여 over/under-grant 가 발생한다.
     """
     space = changed.space
     page = changed.page
     body = changed.body
     space_key = str(space.get("space_key") or "")
-    allowed_groups, allowed_users = synthesize_space_acl(space_key)
+    page_id = str(page["page_id"])
+    if acl_provider is not None:
+        allowed_groups, allowed_users = acl_provider.get_page_acl(
+            page_id=page_id, space_key=space_key
+        )
+    else:
+        allowed_groups, allowed_users = synthesize_space_acl(space_key)
     return PageObject(
-        page_id=str(page["page_id"]),
+        page_id=page_id,
         space_key=space_key,
         title=str(page.get("title") or ""),
         body_html=str(body.get("storage_html") or ""),

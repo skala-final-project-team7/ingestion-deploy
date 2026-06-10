@@ -109,10 +109,13 @@ def build_ingest_deps(settings: Settings) -> IngestDeps:
         job_store=InMemoryIngestJobStore(),
         run_crawl=_run_crawl,
         sync_worker=sync_worker,
-        # local/PoC 안전 기본값 — 운영 RabbitMQ 발행 wiring 은 worker/infra 진입점에서 주입한다.
+        # local/PoC 안전 기본값 — 운영 RabbitMQ 발행 wiring 은 worker/infra 진입점에서
+        # ``bootstrap.build_ingest_completion_publisher(PikaQueuePublisher(channel))`` 로
+        # 한 줄 주입한다(라우팅 키 설정 소비 — 코드 리뷰 A16).
         completion_publisher=NoopIngestCompletionPublisher(),
         # FR-005 — delta 러너는 PoC 안전 기본값(변경분 없음). 운영 delta 는 infra 진입점에서
-        # ``run_delta_sync``(실 client/snapshot)로 교체한다. 스냅샷 경로만 설정에서 주입.
+        # ``bootstrap.build_delta_runner(settings, raw_store=…, queue_publisher=…)`` 로 교체한다
+        # (full crawl 과 동일 acl_provider 배선 — 코드 리뷰 A3·A16). 스냅샷 경로만 설정에서 주입.
         previous_snapshot_path=settings.data_sync_previous_snapshot,
         delta_delete_confirm=settings.data_sync_delta_delete_confirm,
     )

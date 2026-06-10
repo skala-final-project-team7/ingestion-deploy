@@ -110,6 +110,11 @@ class IngestionStatus(StrEnum):
     ATTACH_NO_HEADER = "ATTACH_NO_HEADER"
     OVERSIZE_ATOMIC = "OVERSIZE_ATOMIC"
     TOKENIZER_FAIL = "TOKENIZER_FAIL"
+    # FR-002 후속(2026-06-10, 코드 리뷰 A4) — 첨부 다운로드 실패(재시도 소진/검증 거부).
+    # nack/DLQ 미구현 상태에서 다운로드 실패가 전파되면 poison-message 루프가 되므로
+    # 첨부 단위 격리 status 로 기록한다. rag 레포 enums.py 와 미러 유지(공유 계약 —
+    # chunking-strategy.md §8).
+    ATTACH_DOWNLOAD_FAILED = "ATTACH_DOWNLOAD_FAILED"
 
 
 class IngestJobStatus(StrEnum):

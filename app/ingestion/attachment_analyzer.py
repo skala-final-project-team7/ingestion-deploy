@@ -13,6 +13,11 @@
     analyze_attachment 함수. mime/확장자 분류 + 200자 길이 검증 + 동일 문자 반복
     비율 > 80% 검증 (설계서 §3.3.B). ATTACH_ENCRYPTED 는 추출 단계(별도 어댑터)
     책임이므로 본 분석기에서 다루지 않는다.
+  - 2026-06-10, 코드 리뷰 재점검(P1-3) — ``extracted_text`` 가 비어 있고 파일 원천
+    (``local_path`` 또는 ``download_url``)이 있으면 텍스트 품질 게이트를 건너뛰고
+    파일 기반 추출(chunk_attachment)로 위임한다. 종전에는 텍스트를 채우는 주체가
+    없어(어댑터·분석기 docstring 이 서로를 가리킴) 모든 첨부가 LOW_QUALITY_ATTACH
+    로 스킵 — 첨부 ingest 가 사실상 비활성이었다. ingestion 레포와 미러 유지.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -84,8 +89,10 @@ def analyze_attachment(attachment: Attachment) -> AttachmentAnalysisResult:
     ``UNSUPPORTED_ATTACH_TYPE`` 로 떨어진다 (분류 실패가 유효성 검증보다 우선).
 
     Args:
-        attachment: 분석 대상 첨부. ``extracted_text`` 는 어댑터(또는 추출 헬퍼)
-            가 채워둔 본문이며 본 함수는 추출을 수행하지 않는다.
+        attachment: 분석 대상 첨부. ``extracted_text`` 는 선택 입력이다 — 채워져
+            있으면 텍스트 품질 게이트(②)를 적용하고, 비어 있으면 파일 원천
+            (``local_path``/``download_url``)이 있는 한 파일 기반 추출(chunk_attachment)
+            로 위임한다(P1-3). 본 함수는 추출을 수행하지 않는다.
 
     Returns:
         ``AttachmentAnalysisResult`` — Ingestion 그래프 노드가 status 분기로 청킹
@@ -104,8 +111,19 @@ def analyze_attachment(attachment: Attachment) -> AttachmentAnalysisResult:
             ),
         )
 
-    # ② 텍스트 유효성 — 길이
+    # ② 텍스트 유효성. extracted_text 가 비어 있으면 — 어댑터가 텍스트를 채우지 않는
+    # 경로(fixture: local_path / atlassian: download_url→다운로더) — 길이 게이트로
+    # 차단하지 않고 파일 기반 추출로 위임한다(P1-3). 추출 실패·암호화는 chunk_attachment
+    # 단계가 첨부 단위로 격리한다.
     text = attachment.extracted_text
+    if not text and (attachment.local_path or attachment.download_url):
+        return AttachmentAnalysisResult(
+            attachment_id=attachment.attachment_id,
+            attachment_type=attachment_type,
+            status=IngestionStatus.SUCCESS,
+            reason="extracted_text 없음 — 파일 기반 추출(chunk_attachment)로 위임",
+        )
+
     if len(text) < _MIN_TEXT_LENGTH:
         return AttachmentAnalysisResult(
             attachment_id=attachment.attachment_id,

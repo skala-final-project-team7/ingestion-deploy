@@ -58,7 +58,7 @@ RAG Pipeline 저장소(`../rag`)와 분리된 독립 배포 단위이며, 공통
 
 - `docs/architecture.md` (수집·동기화 흐름, RabbitMQ 큐)
 - `docs/conventions.md`
-- `docs/db-schema.md` (`raw_pages` / `raw_attachments` / `import_jobs`)
+- `docs/db-schema.md` (`raw_pages` / `raw_attachments` / `ingestion_jobs`)
 - `app/adapters/` (DocumentSourceAdapter 계약)
 
 ### 첨부 텍스트 추출기 (FR-002) 작업

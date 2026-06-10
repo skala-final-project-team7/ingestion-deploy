@@ -179,9 +179,11 @@ async def test_ingest_completed_publishes_completion_event_without_credentials()
     assert len(queue.messages) == 1
     msg = queue.messages[0]
     assert msg.routing_key == "ingestion.completed"
+    assert msg.body["eventType"] == "INGEST_COMPLETED"  # spec §2-2 (A9)
     assert msg.body["jobId"].startswith("job-")
     assert msg.body["mode"] == "full"
     assert msg.body["status"] == "COMPLETED"
+    assert msg.body["completedAt"].endswith("+09:00")  # KST 표기 정합(A9)
     assert msg.body["adminUserId"] == "712020:admin"
     # 보안 — credential set 은 절대 completion event payload 에 싣지 않는다(루트 CLAUDE.md).
     assert "accessToken" not in msg.body
@@ -206,6 +208,7 @@ async def test_ingest_failure_publishes_failed_completion_event() -> None:
     assert status_resp.json()["status"] == "FAILED"
     assert len(queue.messages) == 1
     msg = queue.messages[0]
+    assert msg.body["eventType"] == "INGEST_FAILED"  # FAILED 분기(A9)
     assert msg.body["mode"] == "full"
     assert msg.body["status"] == "FAILED"
     assert msg.body["errorCode"] == "INGEST_FAILED"

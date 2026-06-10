@@ -96,6 +96,7 @@ alt·title·caption 텍스트만 인접 텍스트로 보존(향후 멀티모달 
 `INVALID_ACL`(ACL 누락) · `UNSUPPORTED_ATTACH_TYPE`(미지원 mime) · `ATTACH_ENCRYPTED`(암호화 PDF) ·
 `LOW_QUALITY_ATTACH`(텍스트 품질 미달) · `ATTACH_NO_HEADER`(Excel 헤더 누락 → `col_1,col_2,...` 부여) ·
 `OVERSIZE_ATOMIC`(원자성 유형 1500토큰 초과 → 강제 분할 + `Part N/M` 표기) ·
+`ATTACH_DOWNLOAD_FAILED`(첨부 다운로드 실패 — 재시도 소진/URL 검증 거부, FR-002 후속 2026-06-10) ·
 `TOKENIZER_FAIL`(토크나이저 실패 → DLQ 후 재시도).
 
 ## 9. 품질 KPI

@@ -15,6 +15,9 @@
     분기로 E5 + BM25 + Qdrant from_settings + CrossEncoderRerankerImpl을 부트스트랩
   - 2026-06-09, api-spec v2.5.0 정합 — ingest_completion_routing_key 추가(수집 완료 이벤트
     RabbitMQ 라우팅 키). credential 미포함 payload 계약.
+  - 2026-06-10, 코드 리뷰 재점검(A2) — atlassian_empty_restriction_policy 기본값을
+    allow_authenticated → **mark_missing**(fail-closed)으로 변경. 상속 제한 문서
+    과다 노출 방지(ancestor restriction 조회 구현 전까지 allow_authenticated 는 opt-in).
   - 2026-05-19, feature12 — cross_encoder_model 기본값에 ``-v2`` 추가.
     Hugging Face / sentence-transformers 의 실 모델명은 ``cross-encoder/ms-marco-
     MiniLM-L-12-v2`` 이며 ``-v2`` 가 없는 변형은 존재하지 않는다 (설계서
@@ -67,9 +70,14 @@ class Settings(BaseSettings):
     # group 값 앞에 붙일 prefix. 기본값은 무변환이며, 예: "confluence-group:".
     atlassian_group_acl_prefix: str = ""
     # page-level read restriction이 비어 있을 때의 처리 정책.
-    # allow_authenticated(기본): public_acl_group sentinel 부여 → 모든 인증 사용자 허용.
-    # space_fallback: space:{space_key} ACL 합성(공간 단위). mark_missing: 빈 ACL → INVALID_ACL.
-    atlassian_empty_restriction_policy: str = "allow_authenticated"
+    # mark_missing(기본): 빈 ACL → INVALID_ACL(색인 제외, fail-closed).
+    # space_fallback: space:{space_key} ACL 합성(공간 단위).
+    # allow_authenticated(opt-in 전용): public_acl_group sentinel 부여 → 모든 인증 사용자 허용.
+    #   ⚠ Admin Key 실측에서 page restriction 이 비어도 상위(folder/page/space) 권한 상속으로
+    #   조회가 막히는 사례가 확인됐다(adapters/atlassian.py docstring). ancestor restriction
+    #   조회 구현 전까지 allow_authenticated 는 상속 제한 문서를 전체 인증 사용자에게 노출할
+    #   수 있어 기본값으로 두지 않는다(코드 리뷰 A2 — 2026-06-10).
+    atlassian_empty_restriction_policy: str = "mark_missing"
     # allow_authenticated 정책에서 부여할 "모든 인증 사용자" sentinel group 토큰.
     # 이 토큰이 실제 검색 허용이 되려면 RAG build_acl_filter가 동일 토큰을 모든
     # principal 그룹에 주입해야 한다(ingestion↔rag 공유 계약 — docs/db-schema.md §1.4).
@@ -108,6 +116,13 @@ class Settings(BaseSettings):
     # 기본 False = 후보를 surface 만(자동 삭제 안 함 — sync false-positive 로 유효 문서 삭제 방지).
     # True = /ml/ingest delta 잡이 후보를 SyncWorker.apply_delta_deletions(confirm=True)로 적용.
     data_sync_delta_delete_confirm: bool = False
+
+    # --- Webhook 보호 (코드 리뷰 A18, 2026-06-10) ---
+    # /ml/confluence/webhook 는 본문 id 를 즉시 soft-delete 하므로 직접 노출 시 임의 페이지
+    # 대량 soft-delete 가 가능하다. 값이 설정되면 요청 헤더 X-Webhook-Secret 이 일치해야
+    # 처리한다(불일치 401). 빈 값(기본)은 검증 생략 — BFF 전단 인증/NetworkPolicy 로 보호되는
+    # 배치 전제(spec 권고)이며, 직접 노출 환경에서는 반드시 설정한다.
+    webhook_shared_secret: SecretStr = SecretStr("")
 
     # --- 첨부 다운로드 (FR-002) ---
     # HttpAttachmentDownloader 가 Confluence download_url 바이너리를 저장할 로컬 디렉토리.

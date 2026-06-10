@@ -81,9 +81,12 @@ class ConfluenceRestrictionAclProvider:
     사례가 확인됐다. 따라서 빈 restriction 처리는 ``empty_restriction_policy`` 로 명시 분기한다.
 
     정책별 동작:
-      - ``allow_authenticated``: ``[public_acl_group]`` 부여(모든 인증 사용자 허용 sentinel).
+      - ``mark_missing`` (기본 — Settings 기본값과 동일): 빈 ACL 반환 → 색인 ACL gate 가
+        차단(fail-closed). 위 실측 사례 때문에 ancestor restriction 조회가 구현되기
+        전까지는 이것이 안전 기본값이다(코드 리뷰 A2).
       - ``space_fallback``: ``synthesize_space_acl`` 로 공간 단위 ACL 합성.
-      - ``mark_missing`` (클래스 기본): 빈 ACL 반환 → 색인 ACL gate 가 차단.
+      - ``allow_authenticated`` (opt-in 전용): ``[public_acl_group]`` 부여(모든 인증 사용자
+        허용 sentinel). 상속 제한 문서를 과다 노출할 수 있으므로 명시 opt-in 으로만 사용.
     """
 
     client: Any
@@ -114,6 +117,36 @@ class ConfluenceRestrictionAclProvider:
         if self.empty_restriction_policy == "space_fallback":
             return synthesize_space_acl(space_key)
         return [], []
+
+
+def build_restriction_acl_provider(settings: Settings) -> ConfluenceRestrictionAclProvider | None:
+    """Settings 기반 page-level ACL provider 빌더 — full crawl/delta 공용 seam(코드 리뷰 A3).
+
+    ``atlassian_use_admin_key=False`` 면 None(PoC space_key 합성 폴백). True 면 Admin Key
+    클라이언트로 read restriction 을 조회하는 provider 를 만든다. ``from_settings``(full
+    crawl)와 ``bootstrap.build_delta_runner``(delta)가 같은 빌더를 사용해 두 경로의 ACL
+    산출을 통일한다.
+    """
+    if not settings.atlassian_use_admin_key:
+        return None
+    return ConfluenceRestrictionAclProvider(
+        client=_default_confluence_client(
+            cloud_id=settings.atlassian_cloud_id,
+            access_token=settings.atlassian_access_token.get_secret_value(),
+            request_delay_seconds=settings.atlassian_request_delay_seconds,
+            max_retries=settings.atlassian_max_retries,
+            timeout_seconds=settings.atlassian_timeout_seconds,
+            use_admin_key=settings.atlassian_use_admin_key,
+        ),
+        group_identifier_fields=parse_group_identifier_fields(
+            settings.atlassian_group_acl_field_order
+        ),
+        group_acl_prefix=settings.atlassian_group_acl_prefix,
+        empty_restriction_policy=parse_empty_restriction_policy(
+            settings.atlassian_empty_restriction_policy
+        ),
+        public_acl_group=settings.atlassian_public_acl_group,
+    )
 
 
 class AtlassianSourceAdapter(DocumentSourceAdapter):
@@ -173,26 +206,7 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         ``atlassian_empty_restriction_policy`` 로 분기). 꺼져 있으면 provider 를 주입하지
         않아 PoC space_key 합성으로 동작한다(기존 동작 보존).
         """
-        acl_provider = None
-        if settings.atlassian_use_admin_key:
-            acl_provider = ConfluenceRestrictionAclProvider(
-                client=_default_confluence_client(
-                    cloud_id=settings.atlassian_cloud_id,
-                    access_token=settings.atlassian_access_token.get_secret_value(),
-                    request_delay_seconds=settings.atlassian_request_delay_seconds,
-                    max_retries=settings.atlassian_max_retries,
-                    timeout_seconds=settings.atlassian_timeout_seconds,
-                    use_admin_key=settings.atlassian_use_admin_key,
-                ),
-                group_identifier_fields=parse_group_identifier_fields(
-                    settings.atlassian_group_acl_field_order
-                ),
-                group_acl_prefix=settings.atlassian_group_acl_prefix,
-                empty_restriction_policy=parse_empty_restriction_policy(
-                    settings.atlassian_empty_restriction_policy
-                ),
-                public_acl_group=settings.atlassian_public_acl_group,
-            )
+        acl_provider = build_restriction_acl_provider(settings)
         return cls(
             cloud_id=settings.atlassian_cloud_id,
             access_token=settings.atlassian_access_token.get_secret_value(),

@@ -106,9 +106,18 @@ class JsonFixtureSourceAdapter(DocumentSourceAdapter):
     # --- 내부 헬퍼 ---
 
     def _iter_raw_pages(self) -> Iterator[dict]:
-        """픽스처 파일들의 single_page_responses를 순회한다."""
+        """픽스처 파일들의 single_page_responses를 순회한다.
+
+        픽스처 부재는 즉시 명확한 오류로 표면화한다(P1-6) — 종전에는 기본 설정의
+        ``POST /ml/ingest`` 가 원인 불명 ``FileNotFoundError`` 로 잡 FAILED 가 됐다.
+        """
         for fname in self.fixture_files:
             path = self.samples_dir / fname
+            if not path.exists():
+                raise FileNotFoundError(
+                    f"fixture not found: {path} — samples_dir 설정(RAG_SAMPLES_DIR)과 "
+                    f"samples/ 픽스처 존재를 확인하세요(저장소 기본: samples/{fname})"
+                )
             data = json.loads(path.read_text(encoding="utf-8"))
             yield from data.get("single_page_responses", [])
 

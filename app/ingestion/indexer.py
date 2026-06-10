@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from hashlib import sha1
 
 from app.ingestion.embedder.base import DenseEmbedder, SparseEmbedder, SparseVector
-from app.ingestion.embedding import pool_embedding_texts
+from app.ingestion.embedding import pool_embedding_texts, should_skip_embedding
 from app.ingestion.vector_store import CONTENT_POOL, POOL_NAMES
 from app.schemas.chunk import Chunk
 from app.schemas.enums import SourceType
@@ -124,11 +124,13 @@ def index_chunks(
     result = IndexerResult()
 
     # --- Phase 1: 멱등성 필터 ---
+    # 판정은 embedding.should_skip_embedding 으로 일원화한다(P4 — 종전에는 동일 비교를
+    # 인라인 중복해 함수가 죽은 코드였다).
     to_index: list[tuple[Chunk, int]] = []
     for chunk in chunks_list:
         version = version_by_page_id[chunk.metadata.page_id]
         cached_version = cache.get_cached_version(chunk.metadata.chunk_id)
-        if cached_version == version:
+        if should_skip_embedding(version, cached_version):
             result.skipped_count += 1
             result.skipped_chunk_ids.append(chunk.metadata.chunk_id)
             continue

@@ -1,7 +1,9 @@
 """run_delta_sync 단위 테스트 — vendored Data Sync Agent 통합 경계 검증.
 
 vendored delta sync workflow 는 fake runner 로 대체하고, ChangedDocument→PageObject
-매핑·raw_pages 적재·Chunking Queue 재투입·삭제 후보 집계를 검증한다. 기존
+매핑·raw_pages 적재·Chunking Queue 재투입·삭제 후보 집계를 검증한다. 코드 리뷰
+재점검(A3·A13) 후속으로 acl_provider seam(주입 시 provider ACL, 미주입 시 space 합성)과
+페이지 단위 격리(매핑 실패 1건 → failed_items 집계 + 나머지 계속)도 검증한다. 기존
 reconcile_deletions 는 본 테스트에서 건드리지 않는다(무수정 보존).
 """
 
@@ -16,14 +18,20 @@ from app.ingestion.workers.publisher import FakeQueuePublisher
 from app.storage.raw_store import FakeRawPageStore
 
 
-def _changed(page_id: str, *, space_key: str = "ENG", version: int = 1) -> SimpleNamespace:
+def _changed(
+    page_id: str,
+    *,
+    space_key: str = "ENG",
+    version: int = 1,
+    last_modified_at: str = "2026-05-14T01:00:00Z",
+) -> SimpleNamespace:
     return SimpleNamespace(
         space={"space_id": "s1", "space_key": space_key, "space_name": "Engineering"},
         page={
             "page_id": page_id,
             "title": f"Title {page_id}",
             "page_url": f"/wiki/{page_id}",
-            "last_modified_at": "2026-05-14T01:00:00Z",
+            "last_modified_at": last_modified_at,
             "version_number": version,
         },
         body={
@@ -137,4 +145,67 @@ def test_run_delta_sync_counts_failed_items() -> None:
 
     assert result.changed_pages == 0
     assert result.deleted_candidate_page_ids == []
+    assert result.failed_items == 2
+
+
+def test_run_delta_sync_uses_injected_acl_provider_over_space_synthesis() -> None:
+    """A3 — acl_provider 주입 시 delta 재수집 ACL 이 provider 결과(restriction 기반)로 채워진다.
+
+    미주입 기본은 space 합성(위 reingests 테스트) — 주입 시 합성으로 덮어쓰면 over/under-grant.
+    """
+
+    class _RecordingAclProvider:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def get_page_acl(self, *, page_id: str, space_key: str) -> tuple[list[str], list[str]]:
+            self.calls.append((page_id, space_key))
+            return ["frontend-team"], ["712020:user-1"]
+
+    store = FakeRawPageStore()
+    publisher = FakeQueuePublisher()
+    provider = _RecordingAclProvider()
+    runner = _fake_runner(changed=[_changed("page-1")], deleted=[], failed=[])
+
+    result = run_delta_sync(
+        _request(),
+        raw_store=store,
+        publisher=publisher,
+        workflow_runner=runner,
+        acl_provider=provider,
+    )
+
+    assert result.changed_pages == 1
+    assert provider.calls == [("page-1", "ENG")]
+    page = store.pages["page-1"]
+    # space 합성(["space:ENG"])이 아니라 provider ACL 이 그대로 적재된다.
+    assert page.allowed_groups == ["frontend-team"]
+    assert page.allowed_users == ["712020:user-1"]
+
+
+def test_run_delta_sync_isolates_single_mapping_failure_and_continues() -> None:
+    """A13 — 매핑 실패(빈 last_modified) 1건은 failed_items 로 집계되고 나머지는 계속 처리된다.
+
+    종전에는 ValueError 가 전파돼 delta 잡 전체가 FAILED 였다(페이지 단위 격리 회귀).
+    """
+    store = FakeRawPageStore()
+    publisher = FakeQueuePublisher()
+    runner = _fake_runner(
+        changed=[
+            _changed("page-bad", last_modified_at=""),  # 빈 last_modified → 매핑 ValueError
+            _changed("page-ok", version=2),
+        ],
+        deleted=[],
+        failed=[SimpleNamespace(item_id="page-x")],  # 워크플로 자체 실패 1건
+    )
+
+    result = run_delta_sync(
+        _request(), raw_store=store, publisher=publisher, workflow_runner=runner
+    )
+
+    # 실패 1건이 잡을 죽이지 않고 정상 페이지는 적재·발행된다.
+    assert result.changed_pages == 1
+    assert set(store.pages) == {"page-ok"}
+    assert [m.body["page_id"] for m in publisher.messages] == ["page-ok"]
+    # failed_items = 워크플로 실패(1) + 페이지 격리 실패(1).
     assert result.failed_items == 2

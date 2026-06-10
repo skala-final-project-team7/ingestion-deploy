@@ -3,7 +3,9 @@
 vendored ``run_full_crawl_workflow`` 를 fake Confluence client 와 함께 실제로 구동해
 ProcessedDocument→PageObject 매핑·PoC ACL 합성·since 필터·list_active_ids 를 검증한다.
 Admin Key 경로(read restriction → allowed_groups/allowed_users)와 빈 restriction 정책
-(allow_authenticated / space_fallback / mark_missing)도 fake client 로 검증한다.
+(allow_authenticated / space_fallback / mark_missing — 기본은 fail-closed mark_missing,
+코드 리뷰 A2)도 fake client 로 검증한다. ``build_restriction_acl_provider``(full crawl/
+delta 공용 seam — 코드 리뷰 A3)의 Settings 기반 분기도 검증한다.
 외부 HTTP 는 fake client 로 대체한다(루트 CLAUDE.md 테스트 규칙).
 """
 
@@ -12,15 +14,19 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from pydantic import SecretStr
+
 from app.adapters.atlassian import (
     AtlassianSourceAdapter,
     ConfluenceRestrictionAclProvider,
+    build_restriction_acl_provider,
     parse_empty_restriction_policy,
     parse_group_identifier_fields,
     parse_read_restrictions_acl,
     synthesize_authenticated_acl,
 )
 from app.adapters.json_fixture import parse_atlassian_datetime
+from app.config import Settings
 
 
 class _FakeConfluenceClient:
@@ -381,3 +387,58 @@ def test_confluence_restriction_acl_provider_passes_group_mapping_options() -> N
 
     assert groups == ["confluence-group:frontend"]
     assert users == []
+
+
+# --- build_restriction_acl_provider (코드 리뷰 A3 — full crawl/delta 공용 seam) ---
+
+
+def test_settings_default_empty_restriction_policy_is_mark_missing() -> None:
+    """A2 — 기본 정책은 fail-closed mark_missing 이다(상속 제한 문서 과다 노출 방지).
+
+    allow_authenticated 는 ancestor restriction 조회 구현 전까지 opt-in 전용이며,
+    provider 무인자 기본값도 Settings 기본값과 동일해야 한다(이중 계약 고정).
+    """
+    assert Settings().atlassian_empty_restriction_policy == "mark_missing"
+    provider = ConfluenceRestrictionAclProvider(client=object())
+    assert provider.empty_restriction_policy == "mark_missing"
+
+
+def test_build_restriction_acl_provider_none_when_admin_key_disabled() -> None:
+    """admin key off(기본) → None — 호출자(from_settings/build_delta_runner)가 space 합성 폴백."""
+    assert build_restriction_acl_provider(Settings(atlassian_use_admin_key=False)) is None
+
+
+def test_build_restriction_acl_provider_builds_provider_with_settings_policy() -> None:
+    """admin key on → Settings 의 정책/그룹 매핑 옵션이 반영된 provider 를 만든다."""
+    settings = Settings(
+        atlassian_use_admin_key=True,
+        atlassian_cloud_id="cloud-synthetic",
+        atlassian_access_token=SecretStr("token-synthetic"),
+        atlassian_group_acl_field_order="name,id",
+        atlassian_group_acl_prefix="confluence-group:",
+        atlassian_public_acl_group="*",
+    )
+
+    provider = build_restriction_acl_provider(settings)
+
+    assert isinstance(provider, ConfluenceRestrictionAclProvider)
+    # Settings 기본 정책(mark_missing — A2 fail-closed)이 그대로 흐른다.
+    assert provider.empty_restriction_policy == "mark_missing"
+    assert provider.group_identifier_fields == ("name", "id")
+    assert provider.group_acl_prefix == "confluence-group:"
+    assert provider.public_acl_group == "*"
+
+
+def test_build_restriction_acl_provider_honors_opt_in_policy() -> None:
+    """opt-in 정책(allow_authenticated)을 명시하면 provider 에 그대로 반영된다."""
+    settings = Settings(
+        atlassian_use_admin_key=True,
+        atlassian_cloud_id="cloud-synthetic",
+        atlassian_access_token=SecretStr("token-synthetic"),
+        atlassian_empty_restriction_policy="allow_authenticated",
+    )
+
+    provider = build_restriction_acl_provider(settings)
+
+    assert isinstance(provider, ConfluenceRestrictionAclProvider)
+    assert provider.empty_restriction_policy == "allow_authenticated"

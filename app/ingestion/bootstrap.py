@@ -14,6 +14,12 @@
     build_chunking_worker_deps (PoC vs real).
   - 2026-06-09, FR-002 — build_attachment_downloader 추가(atlassian 소스 시 HttpAttachmentDownloader
     주입; fixture 는 None). build_chunking_worker_deps 실 branch 에 배선.
+  - 2026-06-10, 코드 리뷰 재점검(A11·A16) — (1) build_attachment_downloader 에 호스트
+    allowlist(atlassian_api_base_url) + file:// prefix(samples_dir) 검증 배선. (2) infra
+    진입점용 운영 wiring 헬퍼 추가: build_ingest_completion_publisher(라우팅 키 설정 소비 —
+    dead config 해소) / build_delta_runner(run_delta_sync + full crawl 과 동일 acl_provider).
+    RabbitMQ 연결 소유는 여전히 infra 책임(featureI-7c) — 채널/QueuePublisher 만 받으면
+    한 줄로 배선되도록 조립부를 제공한다.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -24,17 +30,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from app.config import Settings, get_settings
 from app.ingestion.embedder.base import FakeDenseEmbedder, FakeSparseEmbedder
+from app.ingestion.sync import DeltaSyncRequest, DeltaSyncResult
 from app.ingestion.workers.chunking_worker import ChunkingWorkerDeps
+from app.ingestion.workers.publisher import QueuePublisher
 from app.storage.jobs import FakeIngestionJobsRepository
 from app.storage.mongo_cache import FakeEmbeddingCache
 from app.storage.qdrant_fake import FakeQdrantPoolStore
 from app.storage.raw_store import FakeRawPageStore, RawPageStore
 
 if TYPE_CHECKING:
+    from app.api.ingest_completion import IngestCompletionPublisher
     from app.ingestion.attachment_downloader import AttachmentDownloader
     from app.ingestion.document_analyzer import DocumentAnalyzer
     from app.ingestion.soft_delete import SoftDeleteStore
@@ -130,6 +140,8 @@ def build_attachment_downloader(settings: Settings | None = None) -> AttachmentD
     resolved = settings or get_settings()
     if resolved.source_type != "atlassian":
         return None
+    from urllib.parse import urlparse
+
     import httpx
 
     from app.ingestion.attachment_downloader import HttpAttachmentDownloader
@@ -137,10 +149,69 @@ def build_attachment_downloader(settings: Settings | None = None) -> AttachmentD
     headers = {"Authorization": f"Bearer {resolved.atlassian_access_token.get_secret_value()}"}
     if resolved.atlassian_use_admin_key:
         headers["Atl-Confluence-With-Admin-Key"] = "true"
+    # A11 — 자격증명이 실린 다운로드는 Atlassian API 호스트로만 허용하고, file:// URI 는
+    # 픽스처 디렉터리(samples_dir) 아래로만 제한한다(저장 데이터의 download_url 은 신뢰 경계 밖).
+    api_host = urlparse(resolved.atlassian_api_base_url).hostname
     return HttpAttachmentDownloader(
         download_dir=resolved.attachment_download_dir,
         client=httpx.Client(headers=headers),
+        allowed_hosts=[api_host] if api_host else None,
+        file_uri_allowed_prefix=resolved.samples_dir,
     )
+
+
+def build_ingest_completion_publisher(
+    queue_publisher: QueuePublisher, settings: Settings | None = None
+) -> IngestCompletionPublisher:
+    """완료 이벤트 publisher 조립(A16) — ``ingest_completion_routing_key`` 설정을 소비한다.
+
+    RabbitMQ 채널/연결 소유는 infra 진입점 책임(featureI-7c)이므로, 구성된
+    ``QueuePublisher`` 를 받아 ``QueueIngestCompletionPublisher`` 로 감싸기만 한다::
+
+        publisher = PikaQueuePublisher(channel)
+        deps.completion_publisher = build_ingest_completion_publisher(publisher, settings)
+    """
+    from app.api.ingest_completion import QueueIngestCompletionPublisher
+
+    resolved = settings or get_settings()
+    return QueueIngestCompletionPublisher(
+        publisher=queue_publisher,
+        routing_key=resolved.ingest_completion_routing_key,
+    )
+
+
+def build_delta_runner(
+    settings: Settings | None = None,
+    *,
+    raw_store: RawPageStore | None = None,
+    queue_publisher: QueuePublisher | None = None,
+) -> Callable[[DeltaSyncRequest], DeltaSyncResult]:
+    """운영 delta 러너 조립(A16) — ``run_delta_sync`` 에 full crawl 과 동일 acl_provider 를 배선.
+
+    chunking 재투입 publisher(RabbitMQ)는 infra 가 구성해 전달한다(미전달 시 PoC
+    ``FakeQueuePublisher`` — 발행 검증/local 용). 반환 callable 은 ``IngestDeps.run_delta``
+    에 그대로 주입한다(코드 리뷰 A3·A16)::
+
+        deps.run_delta = build_delta_runner(settings, raw_store=store, queue_publisher=pub)
+    """
+    from app.adapters.atlassian import build_restriction_acl_provider
+    from app.ingestion.sync import run_delta_sync
+    from app.ingestion.workers.publisher import FakeQueuePublisher
+
+    resolved = settings or get_settings()
+    store = raw_store or build_raw_page_store(resolved)
+    publisher = queue_publisher or FakeQueuePublisher()
+    acl_provider = build_restriction_acl_provider(resolved)
+
+    def _run_delta(request: DeltaSyncRequest) -> DeltaSyncResult:
+        return run_delta_sync(
+            request,
+            raw_store=store,
+            publisher=publisher,
+            acl_provider=acl_provider,
+        )
+
+    return _run_delta
 
 
 def build_soft_delete_store(settings: Settings | None = None) -> SoftDeleteStore:
