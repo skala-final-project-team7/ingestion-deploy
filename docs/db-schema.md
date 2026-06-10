@@ -104,7 +104,7 @@ payload 필드로 복원한다.
 >
 > **빈 restriction 처리 (`atlassian_empty_restriction_policy`)** — page-level restriction 이 비어 있는
 > 페이지(=조직 내 인증 사용자 누구나 열람 가능)는 다음 정책으로 분기한다:
-> - `allow_authenticated`(기본): `allowed_groups`에 sentinel group(`atlassian_public_acl_group`, 기본
+> - `allow_authenticated`(opt-in — 기본은 `mark_missing`(fail-closed), 2026-06-10 코드 리뷰 A2): `allowed_groups`에 sentinel group(`atlassian_public_acl_group`, 기본
 >   `"*"`)을 부여해 **모든 인증 사용자**에게 허용한다. **공유 계약** — 이 sentinel 이 실제 검색 허용으로
 >   이어지려면 RAG `app/query/acl.py:build_acl_filter` 가 동일 토큰을 모든 principal 의 `groups`에
 >   주입해야 한다(ingestion↔rag, **ADR 0003**). 미주입 시 색인은 되지만 검색에 노출되지 않는다.

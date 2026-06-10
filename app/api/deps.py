@@ -19,6 +19,8 @@
     infra/worker 진입점에서 주입한다.
   - 2026-06-09, FR-005 delta 삭제 적용 — IngestDeps 에 ``delta_delete_confirm`` 추가(기본 False=
     후보 surface만; True 시 delta 잡이 apply_delta_deletions(confirm=True)로 soft-delete).
+  - 2026-06-10, 코드 리뷰 재점검(A16) — 운영 wiring 안내를 bootstrap 헬퍼
+    (build_ingest_completion_publisher / build_delta_runner) 기준으로 갱신(한 줄 주입).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x

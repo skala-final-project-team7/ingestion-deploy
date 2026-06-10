@@ -10,6 +10,8 @@
   - 2026-05-15, 최초 작성, feature2 — JsonFixtureSourceAdapter + Atlassian 포맷 매핑
   - 2026-05-17, 코드 리뷰 후속(P1-3) — download_url을 file:// URI(사용자 노출용)로 두고,
     청커가 직접 열 로컬 경로는 local_path 필드에 분리 매핑 (ADR-2026-001)
+  - 2026-06-10, 코드 리뷰 재점검(P1-6) — 픽스처 파일 부재 시 경로·설정 힌트를 담은
+    FileNotFoundError 로 즉시 표면화(기본 ingest 가 원인 불명 FAILED 로 죽던 문제).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, Pydantic 2.7+

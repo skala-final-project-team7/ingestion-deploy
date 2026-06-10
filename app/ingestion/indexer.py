@@ -14,6 +14,8 @@
     attachment_download_urls 인자 추가. 모든 Pool upsert + cache write 성공 후 단일
     upsert_many 배치로 chunk_lookup 적재 (db-schema §2.5). 본문 청크 download_url=None,
     첨부 청크는 매핑에서 조회해 채움. 미주입 환경(default None)은 적재 없이 legacy 동작.
+  - 2026-06-10, 코드 리뷰 재점검(P4) — 멱등성 판정을 embedding.should_skip_embedding 호출로
+    일원화(인라인 중복 제거 — 함수가 죽은 코드였던 문제 해소). rag 레포와 미러.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x

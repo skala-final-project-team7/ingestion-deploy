@@ -21,6 +21,9 @@
     Admin Key 로 접근 가능한 전체 스페이스를 수집). sentinel 매칭은 RAG 검색
     ``build_acl_filter`` 가 모든 principal 에 동일 토큰을 주입해야 성립한다(공유 계약 —
     docs/db-schema.md §1.4, ADR 0003).
+  - 2026-06-10, 코드 리뷰 재점검(A2·A3·A16) — empty_restriction 기본 정책 문서를 mark_missing
+    (fail-closed) 기준으로 정정하고, build_restriction_acl_provider() 를 추출해 full crawl
+    (from_settings)과 delta(bootstrap.build_delta_runner)가 동일 ACL 산출 경로를 공유하게 함.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x (vendored 에이전트가 enum.StrEnum 사용)
@@ -32,7 +35,8 @@
   - ``atlassian_use_admin_key=True``: Admin Key 로 ``/rest/api/content/{pageId}/
     restriction/byOperation/read`` 를 조회해 ``allowed_groups``/``allowed_users`` 산출.
     restriction 이 비어 있을 때의 처리는 ``atlassian_empty_restriction_policy`` 로 분기:
-      * ``allow_authenticated`` (기본): ``[public_acl_group]`` 부여 → 모든 인증 사용자 허용.
+      * ``allow_authenticated`` (opt-in — 기본은 ``mark_missing``): ``[public_acl_group]`` 부여
+        → 모든 인증 사용자 허용(상속 제한 미반영 위험 — A2).
       * ``space_fallback``: ``["space:{space_key}"]`` 합성(공간 단위 ACL).
       * ``mark_missing``: 빈 ACL → 색인 단계 ``INVALID_ACL`` 차단(보수 정책).
 --------------------------------------------------

@@ -7,6 +7,8 @@
 작성일 : 2026-05-15
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-05-15, 최초 작성, feature1 schemas — 열거형 9종 정의 (enum.StrEnum 기반)
+  - 2026-06-10, 코드 리뷰 재점검(A4) — IngestionStatus.ATTACH_DOWNLOAD_FAILED 추가
+    (첨부 다운로드 실패 격리 status — rag 레포와 미러, chunking-strategy.md §8).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x 권장 (enum.StrEnum 사용)
