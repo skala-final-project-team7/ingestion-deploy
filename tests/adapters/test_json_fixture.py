@@ -28,9 +28,7 @@ def test_missing_fixture_raises_file_not_found_with_path(tmp_path: Path) -> None
 
 
 def test_existing_fixture_iterates_without_error(tmp_path: Path) -> None:
-    (tmp_path / "ok.json").write_text(
-        json.dumps({"single_page_responses": []}), encoding="utf-8"
-    )
+    (tmp_path / "ok.json").write_text(json.dumps({"single_page_responses": []}), encoding="utf-8")
     adapter = JsonFixtureSourceAdapter(samples_dir=tmp_path, fixture_files=["ok.json"])
 
     assert list(adapter.fetch_pages()) == []
