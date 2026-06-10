@@ -479,10 +479,13 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         try:
             # ancestor_ids 는 capability 플래그(supports_ancestor_ids)를 켠 provider 에만
             # 전달한다 — 2-kwarg 시그니처의 기존/테스트 fake provider 호환(A2 후속).
+            # Protocol(PageAclProvider)은 공통 2-kwarg 계약만 정의하므로, capability 확인
+            # 후의 확장 호출은 Any 로 좁혀 호출한다(런타임 게이트가 시그니처를 보장).
             if ancestor_ids is not None and getattr(
                 self._acl_provider, "supports_ancestor_ids", False
             ):
-                return self._acl_provider.get_page_acl(
+                ancestor_capable: Any = self._acl_provider
+                return ancestor_capable.get_page_acl(
                     page_id=page_id, space_key=space_key, ancestor_ids=ancestor_ids
                 )
             return self._acl_provider.get_page_acl(page_id=page_id, space_key=space_key)
