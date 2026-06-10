@@ -2,13 +2,14 @@
 
 --------------------------------------------------
 작성자 : 최태성
-작성목적 : 1차 분할·크기 규칙을 거친 ChunkDraft에 청크 메타데이터 19종을 부착해
+작성목적 : 1차 분할·크기 규칙을 거친 ChunkDraft에 청크 메타데이터 21종을 부착해
           ChunkMetadata를 생성한다 (chunking-strategy.md §6).
 작성일 : 2026-05-15
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-05-15, 최초 작성, feature3-B — build_metadata (본문 청크)
   - 2026-05-17, 코드 리뷰 후속(P2) — doc_type을 DocType enum 그대로 전달
     (ChunkMetadata.doc_type 정적 강제 반영)
+  - 2026-06-10, A8 잔여 — page.space_id/space_name 전파(메타 21종 체계). rag 미러.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, Pydantic 2.7+
@@ -28,7 +29,7 @@ def build_metadata(
     chunk_index: int,
     doc_type: DocType,
 ) -> ChunkMetadata:
-    """본문 ChunkDraft에 청크 메타데이터 19종을 부착한다.
+    """본문 ChunkDraft에 청크 메타데이터 21종을 부착한다.
 
     무결성 규칙(chunking-strategy.md §6.3):
     - section_header 빈 문자열 금지 → 'untitled'
@@ -42,7 +43,7 @@ def build_metadata(
         doc_type: 본문 문서 유형.
 
     Returns:
-        19종 필드가 채워진 ChunkMetadata.
+        21종 필드가 채워진 ChunkMetadata.
     """
     section_header = draft.section_header.strip() or "untitled"
     section_path = " > ".join([*page.ancestors, section_header])
@@ -56,6 +57,8 @@ def build_metadata(
         labels=page.labels,
         doc_type=doc_type,
         space_key=page.space_key,
+        space_id=page.space_id,
+        space_name=page.space_name,
         allowed_groups=page.allowed_groups,
         allowed_users=page.allowed_users,
         webui_link=page.webui_link,

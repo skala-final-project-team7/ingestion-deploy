@@ -18,6 +18,8 @@
     space 합성 ACL 로 덮이는 over/under-grant 차단. (2) 변경 페이지 루프에 페이지
     단위 격리 추가(crawler.py 정합) — 1건 실패가 delta 잡 전체를 FAILED 로 만들지
     않고 failed_items 로 집계된다.
+  - 2026-06-10, A8 잔여 — delta 변환에 space_id/space_name 매핑 추가
+    (ChangedDocument.space dict → PageObject — 출처 카드 spaceId/spaceName 원천).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -311,6 +313,8 @@ def _changed_document_to_page_object(
     return PageObject(
         page_id=page_id,
         space_key=space_key,
+        space_id=str(space.get("space_id") or ""),
+        space_name=str(space.get("space_name") or space.get("name") or ""),
         title=str(page.get("title") or ""),
         body_html=str(body.get("storage_html") or ""),
         version_number=int(page.get("version_number") or 0),

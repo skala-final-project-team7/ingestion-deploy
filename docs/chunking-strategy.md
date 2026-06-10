@@ -67,11 +67,14 @@ doc_type 미결정 시 `operation` 기본값.
 비텍스트 콘텐츠(이미지·도형·차트·다이어그램·임베디드 객체)는 PoC 색인 대상에서 제외 —
 alt·title·caption 텍스트만 인접 텍스트로 보존(향후 멀티모달 확장).
 
-## 6. 청크 메타데이터 (19종)
+## 6. 청크 메타데이터 (21종)
 
-**공통 13종** — `chunk_id`(SHA1(page_id+chunk_index+attachment_id), 결정론적),
+**공통 15종** — `chunk_id`(SHA1(page_id+chunk_index+attachment_id), 결정론적),
 `page_id`, `page_title`, `section_header`, `section_path`, `chunk_index`(0-based), `labels[]`,
-`doc_type`, `space_key`, `allowed_groups[]`, `allowed_users[]`, `webui_link`, `last_modified`.
+`doc_type`, `space_key`, `space_id`, `space_name`, `allowed_groups[]`, `allowed_users[]`,
+`webui_link`, `last_modified`.
+(`space_id`/`space_name` 은 2026-06-10 A8 후속 — 출처 카드 `sources[].spaceId/spaceName` 원천.
+크롤 SpaceInfo 에서 채우며 원천 없는 공급원·구버전 payload 는 빈 문자열 폴백.)
 
 **첨부 전용 5종 (v0.2.2)** — `source_type`(`page`|`attachment`, 모든 청크 필수),
 `attachment_id`, `attachment_filename`, `attachment_mime`, `extracted_format`.

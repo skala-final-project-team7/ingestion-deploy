@@ -22,6 +22,7 @@
     (section_header=p.<N>: <제목>), 헤딩 미검출 시 단일 draft→800토큰 슬라이딩 윈도우,
     fitz 추출 0건 시 pdfplumber 폴백, 암호화 PDF는 ATTACH_ENCRYPTED ValueError.
     feature4 (pdf/docx/xlsx/csv) 전부 완료.
+  - 2026-06-10, A8 잔여 — 첨부 메타에도 page.space_id/space_name 전파(부모 페이지 상속).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, python-docx 1.1+, openpyxl 3.1+, pymupdf 1.24+, pdfplumber 0.11+.
@@ -642,6 +643,8 @@ def build_attachment_metadata(
         labels=page.labels,
         doc_type=attachment_type,
         space_key=page.space_key,
+        space_id=page.space_id,
+        space_name=page.space_name,
         allowed_groups=page.allowed_groups,
         allowed_users=page.allowed_users,
         webui_link=page.webui_link,

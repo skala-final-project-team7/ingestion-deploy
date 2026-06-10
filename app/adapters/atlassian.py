@@ -24,6 +24,12 @@
   - 2026-06-10, 코드 리뷰 재점검(A2·A3·A16) — empty_restriction 기본 정책 문서를 mark_missing
     (fail-closed) 기준으로 정정하고, build_restriction_acl_provider() 를 추출해 full crawl
     (from_settings)과 delta(bootstrap.build_delta_runner)가 동일 ACL 산출 경로를 공유하게 함.
+  - 2026-06-10, A2 후속·A8 잔여 — (1) **ancestor restriction 상속 워크 구현**: 빈 page
+    restriction 시 조상 체인(full crawl 은 payload parent_id 체인, delta 는 get_page_detail
+    parentId 워크)을 가까운 순으로 조회해 상속 ACL 산출(+restriction/parent 메모이즈,
+    ancestor_lookup_enabled 토글). 어댑터는 크롤 1회 수집으로 parent/title 맵을 만들어
+    ancestor_ids(ACL)와 ancestors 제목 체인(section_path)을 함께 채운다. (2) SpaceInfo
+    id/name → PageObject.space_id/space_name 매핑(sources[].spaceId/spaceName 원천).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x (vendored 에이전트가 enum.StrEnum 사용)
@@ -44,16 +50,19 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import tempfile
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
 from app.adapters.base import ActiveIds, ChangeEvent, DocumentSourceAdapter
 from app.adapters.json_fixture import parse_atlassian_datetime
 from app.schemas.page_object import PageObject
+
+_LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from app.config import Settings
@@ -99,6 +108,21 @@ class ConfluenceRestrictionAclProvider:
     group_identifier_fields: tuple[str, ...] = ("id", "groupId", "name")
     group_acl_prefix: str = ""
     public_acl_group: str = "*"
+    # 2026-06-10(A2 후속) — 빈 page restriction 시 조상 체인의 restriction 을 조회해
+    # 상속 ACL 을 산출한다(가까운 조상 우선). False 면 종전 동작(정책 폴백 직행).
+    ancestor_lookup_enabled: bool = True
+    max_ancestor_depth: int = 20
+    # 호출 캐시 — restriction/parent 조회는 페이지·조상 단위로 1회만 수행한다(크롤 중
+    # 형제 페이지들이 같은 조상을 공유하므로 API 비용을 조상 수로 상한). frozen 이지만
+    # dict 내용 변이는 허용된다(eq/repr 제외).
+    _restriction_cache: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
+    _parent_cache: dict[str, str | None] = field(default_factory=dict, repr=False, compare=False)
+
+    # 어댑터가 크롤 시점에 확보한 조상 체인(ancestor_ids)을 전달해도 되는 provider 임을
+    # 알리는 capability 플래그 — 테스트용 단순 fake(2-kwarg)와의 호환을 위해 명시 opt-in.
+    supports_ancestor_ids: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -107,20 +131,95 @@ class ConfluenceRestrictionAclProvider:
             parse_empty_restriction_policy(self.empty_restriction_policy),
         )
 
-    def get_page_acl(self, *, page_id: str, space_key: str) -> tuple[list[str], list[str]]:
-        raw = self.client.get_page_read_restrictions(page_id)
-        allowed_groups, allowed_users = parse_read_restrictions_acl(
-            raw,
-            group_identifier_fields=self.group_identifier_fields,
-            group_acl_prefix=self.group_acl_prefix,
-        )
+    def get_page_acl(
+        self,
+        *,
+        page_id: str,
+        space_key: str,
+        ancestor_ids: Sequence[str] | None = None,
+    ) -> tuple[list[str], list[str]]:
+        """page-level → (빈 경우) 조상 체인 → (모두 빈 경우) 정책 폴백 순으로 ACL 산출.
+
+        Args:
+            page_id: 대상 페이지.
+            space_key: 폴백(``space_fallback``) 합성용.
+            ancestor_ids: 가까운 조상 → 루트 순 조상 id. 호출자(full crawl 어댑터)가
+                크롤 payload 의 parent_id 체인으로 전달하면 API 추가 호출 없이 사용한다.
+                None 이면(delta 등) ``get_page_detail`` 의 parentId 를 따라 직접 걷는다.
+        """
+        allowed_groups, allowed_users = self._restrictions_for(page_id)
         if allowed_groups or allowed_users:
-            return allowed_groups, allowed_users
+            return list(allowed_groups), list(allowed_users)
+
+        if self.ancestor_lookup_enabled:
+            for ancestor_id in self._resolve_ancestor_ids(page_id, ancestor_ids):
+                a_groups, a_users = self._restrictions_for(ancestor_id)
+                if a_groups or a_users:
+                    # Confluence view restriction 은 하위 페이지에 상속된다 — 가장
+                    # 가까운 제한 조상의 ACL 을 본 페이지의 유효 ACL 로 사용한다.
+                    return list(a_groups), list(a_users)
+
         if self.empty_restriction_policy == "allow_authenticated":
             return synthesize_authenticated_acl(self.public_acl_group)
         if self.empty_restriction_policy == "space_fallback":
             return synthesize_space_acl(space_key)
         return [], []
+
+    def _restrictions_for(self, page_id: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """restriction API 호출(+파싱) — 페이지 단위 메모이즈."""
+        cached = self._restriction_cache.get(page_id)
+        if cached is not None:
+            return cached
+        raw = self.client.get_page_read_restrictions(page_id)
+        groups, users = parse_read_restrictions_acl(
+            raw,
+            group_identifier_fields=self.group_identifier_fields,
+            group_acl_prefix=self.group_acl_prefix,
+        )
+        result = (tuple(groups), tuple(users))
+        self._restriction_cache[page_id] = result
+        return result
+
+    def _resolve_ancestor_ids(
+        self, page_id: str, provided: Sequence[str] | None
+    ) -> Iterator[str]:
+        """조상 id 를 가까운 순으로 산출 — 전달분 우선, 없으면 parentId API 워크."""
+        if provided is not None:
+            seen: set[str] = {page_id}
+            for ancestor_id in provided:
+                if ancestor_id and ancestor_id not in seen:
+                    seen.add(ancestor_id)
+                    yield ancestor_id
+            return
+        current = page_id
+        visited = {page_id}
+        for _ in range(self.max_ancestor_depth):
+            parent = self._parent_of(current)
+            if not parent or parent in visited:
+                return
+            visited.add(parent)
+            yield parent
+            current = parent
+
+    def _parent_of(self, page_id: str) -> str | None:
+        """v2 page 상세의 parentId — 페이지 단위 메모이즈. 조회 실패는 None(정책 폴백)."""
+        if page_id in self._parent_cache:
+            return self._parent_cache[page_id]
+        detail_fn = getattr(self.client, "get_page_detail", None)
+        parent: str | None = None
+        if detail_fn is not None:
+            try:
+                detail = detail_fn(page_id)
+                raw_parent = detail.get("parentId") or detail.get("parent_id")
+                parent = str(raw_parent) if raw_parent else None
+            except Exception:  # noqa: BLE001 — 조상 조회 실패가 수집을 중단시키지 않는다.
+                _LOGGER.warning(
+                    "ancestor lookup failed for page_id=%s — 정책 폴백으로 진행", page_id,
+                    exc_info=True,
+                )
+                parent = None
+        self._parent_cache[page_id] = parent
+        return parent
 
 
 def build_restriction_acl_provider(settings: Settings) -> ConfluenceRestrictionAclProvider | None:
@@ -150,6 +249,7 @@ def build_restriction_acl_provider(settings: Settings) -> ConfluenceRestrictionA
             settings.atlassian_empty_restriction_policy
         ),
         public_acl_group=settings.atlassian_public_acl_group,
+        ancestor_lookup_enabled=settings.atlassian_ancestor_restriction_lookup,
     )
 
 
@@ -231,8 +331,16 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
                 None 이면 전체(Full Crawl). 에이전트 MVP 는 항상 전체를 수집하므로
                 증분 필터는 어댑터에서 ``last_modified`` 비교로 적용한다.
         """
-        for document in self._collect_documents():
-            page = self._to_page_object(document)
+        documents = self._collect_documents()
+        # 2026-06-10(A2 후속) — 크롤 payload 의 parent_id 로 조상 체인을 로컬 구성한다.
+        # provider 의 ancestor restriction 워크가 추가 API 호출 없이 동작하게 하고,
+        # PageObject.ancestors(섹션 경로용 제목 체인)도 함께 채운다.
+        parent_by_id = {d.page.page_id: d.page.parent_id for d in documents}
+        title_by_id = {d.page.page_id: d.page.title for d in documents}
+        for document in documents:
+            page = self._to_page_object(
+                document, parent_by_id=parent_by_id, title_by_id=title_by_id
+            )
             if since is not None and page.last_modified < since:
                 continue
             yield page
@@ -280,28 +388,44 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
             use_admin_key=self._use_admin_key,
         )
 
-    def _to_page_object(self, document: Any) -> PageObject:
+    def _to_page_object(
+        self,
+        document: Any,
+        *,
+        parent_by_id: dict[str, str | None] | None = None,
+        title_by_id: dict[str, str] | None = None,
+    ) -> PageObject:
         """vendored ProcessedDocument → 표준 PageObject 변환(모든 변환은 어댑터에서).
 
         매핑(docs/atlassian-api.md 매핑표 + 에이전트 ProcessedDocument 스키마):
             page.page_id            → page_id
-            space.space_key         → space_key
+            space.space_key/id/name → space_key / space_id / space_name (A8 — 출처 카드)
             page.title              → title
             body.storage_html       → body_html  (청커가 HTML 파싱)
             page.version_number     → version_number
             page.last_modified_at   → last_modified (ISO 8601 파싱)
             page.page_url           → webui_link
+            page.parent_id 체인      → ancestors(제목, 루트→직계) + ACL 조상 워크(A2)
             restriction API         → allowed_groups/allowed_users (Admin Key 경로)
             (admin key off)         → allowed_groups/allowed_users (PoC space 합성)
-            (MVP 미산출)            → labels=[] / ancestors=[] / attachments=[]
+            (MVP 미산출)            → labels=[] / attachments=[]
         """
         space_key = document.space.space_key
+        page_id = document.page.page_id
+        ancestor_ids = _ancestor_chain(page_id, parent_by_id or {})
         allowed_groups, allowed_users = self._resolve_acl(
-            page_id=document.page.page_id, space_key=space_key
+            page_id=page_id, space_key=space_key, ancestor_ids=ancestor_ids
         )
+        titles = title_by_id or {}
+        # ancestors 는 섹션 경로(section_path)용 제목 체인 — 루트→직계 순(metadata.py 정합).
+        # 크롤 배치에 제목이 없는 조상(homepage 등 수집 범위 밖)은 경로에서 생략한다 —
+        # ACL 워크(ancestor_ids)는 id 기준이라 영향 없음.
+        ancestor_titles = [titles[aid] for aid in reversed(ancestor_ids) if aid in titles]
         return PageObject(
-            page_id=document.page.page_id,
+            page_id=page_id,
             space_key=space_key,
+            space_id=str(getattr(document.space, "space_id", "") or ""),
+            space_name=str(getattr(document.space, "space_name", "") or ""),
             title=document.page.title,
             body_html=document.body.storage_html,
             version_number=document.page.version_number,
@@ -310,7 +434,7 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
             allowed_users=allowed_users,
             webui_link=document.page.page_url,
             labels=[],
-            ancestors=[],
+            ancestors=ancestor_titles,
             attachments=[],
         )
 
@@ -323,9 +447,21 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         """
         return synthesize_space_acl(space_key)
 
-    def _resolve_acl(self, *, page_id: str, space_key: str) -> tuple[list[str], list[str]]:
+    def _resolve_acl(
+        self,
+        *,
+        page_id: str,
+        space_key: str,
+        ancestor_ids: Sequence[str] | None = None,
+    ) -> tuple[list[str], list[str]]:
         if self._acl_provider is None:
             return self._synthesize_acl(space_key)
+        # ancestor_ids 는 capability 플래그(supports_ancestor_ids)를 켠 provider 에만
+        # 전달한다 — 2-kwarg 시그니처의 기존/테스트 fake provider 호환(A2 후속).
+        if ancestor_ids is not None and getattr(self._acl_provider, "supports_ancestor_ids", False):
+            return self._acl_provider.get_page_acl(
+                page_id=page_id, space_key=space_key, ancestor_ids=ancestor_ids
+            )
         return self._acl_provider.get_page_acl(page_id=page_id, space_key=space_key)
 
 
@@ -363,6 +499,25 @@ def parse_group_identifier_fields(raw: str) -> tuple[str, ...]:
     if not fields:
         raise ValueError("atlassian_group_acl_field_order must contain at least one field")
     return fields
+
+
+def _ancestor_chain(page_id: str, parent_by_id: dict[str, str | None]) -> list[str]:
+    """크롤 payload 의 parent_id 맵으로 조상 id 체인을 만든다 — 가까운 조상 → 루트 순.
+
+    같은 크롤 배치에 없는 parent(루트 밖/권한 밖)는 체인에 포함하되 그 위로는 더
+    걷지 않는다. 사이클·과도 깊이는 방어적으로 중단한다(A2 후속 — 2026-06-10).
+    """
+    chain: list[str] = []
+    visited = {page_id}
+    current = page_id
+    for _ in range(50):
+        parent = parent_by_id.get(current)
+        if not parent or parent in visited:
+            break
+        chain.append(parent)
+        visited.add(parent)
+        current = parent
+    return chain
 
 
 def parse_empty_restriction_policy(raw: str) -> str:

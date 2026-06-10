@@ -17,6 +17,7 @@
   - 2026-05-18, 5-A 후속 — Chunk 재구성 정합. 청커가 산출한 token_count를 payload에
     동봉해 검색 단계(_chunk_from_search_hit)가 ChunkMetadata.token_count를 그대로
     복원할 수 있도록 한다 (additive). db-schema §1.2 동시 갱신.
+  - 2026-06-10, A8 잔여 — payload 에 space_id/space_name 적재(rag search_node 복원 대상).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, Pydantic 2.7+
@@ -68,6 +69,9 @@ def build_point_payload(chunk: Chunk, version_number: int) -> dict[str, Any]:
         "labels": list(metadata.labels),
         "doc_type": metadata.doc_type.value,
         "space_key": metadata.space_key,
+        # 2026-06-10(A8 잔여) — 출처 카드 spaceId/spaceName 원천(rag search_node 가 복원).
+        "space_id": metadata.space_id,
+        "space_name": metadata.space_name,
         "allowed_groups": list(metadata.allowed_groups),
         "allowed_users": list(metadata.allowed_users),
         "webui_link": metadata.webui_link,

@@ -12,6 +12,8 @@
     청커가 직접 열 로컬 경로는 local_path 필드에 분리 매핑 (ADR-2026-001)
   - 2026-06-10, 코드 리뷰 재점검(P1-6) — 픽스처 파일 부재 시 경로·설정 힌트를 담은
     FileNotFoundError 로 즉시 표면화(기본 ingest 가 원인 불명 FAILED 로 죽던 문제).
+  - 2026-06-10, A8 잔여 — raw["space"].id/name → PageObject.space_id/space_name 매핑
+    (+P1-3 위임 문구를 rag 레포와 동일하게 정정).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, Pydantic 2.7+
@@ -73,7 +75,9 @@ class JsonFixtureSourceAdapter(DocumentSourceAdapter):
 
     [첨부 처리]
     샘플 JSON은 첨부 메타(filename/content_type)만 가진다. 누락 필드는 합성하며,
-    텍스트 추출(extracted_text)은 다운스트림(첨부 분석기) 책임이므로 빈 문자열로 둔다.
+    청커가 직접 열 실제 경로를 ``local_path`` 에 채운다(ADR-2026-001 — 파일 기반 추출이
+    정공법). ``extracted_text`` 는 빈 문자열로 두며, 분석기는 빈 텍스트 + local_path
+    조합을 파일 기반 추출(chunk_attachment)로 위임한다(P1-3).
     """
 
     def __init__(
@@ -130,6 +134,8 @@ class JsonFixtureSourceAdapter(DocumentSourceAdapter):
     def _map_page(self, raw: dict) -> PageObject:
         """Atlassian 페이지 응답(dict) → 표준 PageObject."""
         space_key = raw["space"]["key"]
+        space_id = str(raw["space"].get("id") or "")
+        space_name = str(raw["space"].get("name") or "")
         allowed_groups, allowed_users = self._synthesize_acl(space_key)
         last_modified = parse_atlassian_datetime(raw["version"]["when"])
         labels = [
@@ -139,6 +145,8 @@ class JsonFixtureSourceAdapter(DocumentSourceAdapter):
         return PageObject(
             page_id=raw["id"],
             space_key=space_key,
+            space_id=space_id,
+            space_name=space_name,
             title=raw["title"],
             body_html=raw["body"]["storage"]["value"],
             version_number=raw["version"]["number"],
@@ -156,7 +164,8 @@ class JsonFixtureSourceAdapter(DocumentSourceAdapter):
 
         샘플 JSON은 첨부 메타(filename/content_type)만 가지므로 누락 필드를 합성한다.
         download_url은 사용자 노출용 URI(file:// scheme)이며, 청커가 직접 열 실제 경로는
-        local_path에 채운다 (ADR-2026-001). extracted_text는 다운스트림(첨부 분석기)이 채운다.
+        local_path에 채운다 (ADR-2026-001). extracted_text는 빈 문자열로 두고, 분석기가
+        빈 텍스트 + local_path 조합을 파일 기반 추출(chunk_attachment)로 위임한다(P1-3).
         """
         page_id = raw["id"]
         attachments: list[Attachment] = []

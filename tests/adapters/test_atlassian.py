@@ -442,3 +442,187 @@ def test_build_restriction_acl_provider_honors_opt_in_policy() -> None:
 
     assert isinstance(provider, ConfluenceRestrictionAclProvider)
     assert provider.empty_restriction_policy == "allow_authenticated"
+
+
+# --- 2026-06-10(A2 후속) — ancestor restriction 상속 워크 회귀 ---
+
+
+def _restricted_raw(group: str) -> dict[str, Any]:
+    return {
+        "operation": "read",
+        "restrictions": {
+            "group": {"results": [{"id": group}]},
+            "user": {"results": []},
+        },
+    }
+
+
+_EMPTY_RAW: dict[str, Any] = {
+    "operation": "read",
+    "restrictions": {"group": {"results": []}, "user": {"results": []}},
+}
+
+
+class _FakeRestrictionWalkClient:
+    """페이지별 restriction + parentId 체인을 가진 fake — 호출 횟수를 추적한다."""
+
+    def __init__(
+        self,
+        *,
+        restrictions: dict[str, dict[str, Any]],
+        parents: dict[str, str | None] | None = None,
+    ) -> None:
+        self.restrictions = restrictions
+        self.parents = parents or {}
+        self.restriction_calls: list[str] = []
+        self.detail_calls: list[str] = []
+
+    def get_page_read_restrictions(self, page_id: str) -> dict[str, Any]:
+        self.restriction_calls.append(page_id)
+        return self.restrictions.get(page_id, _EMPTY_RAW)
+
+    def get_page_detail(self, page_id: str) -> dict[str, Any]:
+        self.detail_calls.append(page_id)
+        return {"id": page_id, "parentId": self.parents.get(page_id)}
+
+
+def test_ancestor_walk_inherits_nearest_restricted_ancestor() -> None:
+    """빈 page restriction 은 가까운 제한 조상의 ACL 을 상속한다(전달된 체인 사용)."""
+    client = _FakeRestrictionWalkClient(
+        restrictions={
+            "anc-near": _restricted_raw("near-team"),
+            "anc-far": _restricted_raw("far-team"),
+        }
+    )
+    provider = ConfluenceRestrictionAclProvider(client=client)
+
+    groups, users = provider.get_page_acl(
+        page_id="page-1", space_key="ENG", ancestor_ids=["anc-empty", "anc-near", "anc-far"]
+    )
+
+    assert groups == ["near-team"]
+    assert users == []
+    # 전달된 체인을 썼으므로 parentId API(get_page_detail)는 호출되지 않는다.
+    assert client.detail_calls == []
+    # near 에서 멈춰 far 는 조회하지 않는다(가까운 조상 우선 + 조기 종료).
+    assert client.restriction_calls == ["page-1", "anc-empty", "anc-near"]
+
+
+def test_ancestor_walk_all_empty_falls_back_to_policy() -> None:
+    """본인+조상 전부 빈 restriction 이면 정책 폴백(mark_missing → 빈 ACL)."""
+    client = _FakeRestrictionWalkClient(restrictions={})
+    provider = ConfluenceRestrictionAclProvider(client=client)
+
+    groups, users = provider.get_page_acl(
+        page_id="page-1", space_key="ENG", ancestor_ids=["anc-1", "anc-2"]
+    )
+
+    assert (groups, users) == ([], [])
+
+
+def test_ancestor_walk_via_page_detail_when_chain_not_provided() -> None:
+    """ancestor_ids 미전달(delta 경로)이면 get_page_detail parentId 를 따라 걷는다."""
+    client = _FakeRestrictionWalkClient(
+        restrictions={"anc-2": _restricted_raw("ops-team")},
+        parents={"page-1": "anc-1", "anc-1": "anc-2", "anc-2": None},
+    )
+    provider = ConfluenceRestrictionAclProvider(client=client)
+
+    groups, _users = provider.get_page_acl(page_id="page-1", space_key="ENG")
+
+    assert groups == ["ops-team"]
+    assert client.detail_calls == ["page-1", "anc-1"]
+
+
+def test_ancestor_walk_caches_shared_ancestor_restrictions() -> None:
+    """형제 페이지들이 같은 조상을 공유하면 restriction 조회는 조상당 1회다(캐시)."""
+    client = _FakeRestrictionWalkClient(restrictions={"anc-1": _restricted_raw("team-a")})
+    provider = ConfluenceRestrictionAclProvider(client=client)
+
+    for page_id in ("page-1", "page-2", "page-3"):
+        groups, _ = provider.get_page_acl(
+            page_id=page_id, space_key="ENG", ancestor_ids=["anc-1"]
+        )
+        assert groups == ["team-a"]
+
+    assert client.restriction_calls.count("anc-1") == 1
+
+
+def test_ancestor_walk_disabled_restores_legacy_policy_fallback() -> None:
+    """ancestor_lookup_enabled=False 면 조상이 제한돼 있어도 정책 폴백 직행(종전 동작)."""
+    client = _FakeRestrictionWalkClient(restrictions={"anc-1": _restricted_raw("team-a")})
+    provider = ConfluenceRestrictionAclProvider(client=client, ancestor_lookup_enabled=False)
+
+    groups, users = provider.get_page_acl(
+        page_id="page-1", space_key="ENG", ancestor_ids=["anc-1"]
+    )
+
+    assert (groups, users) == ([], [])
+    assert "anc-1" not in client.restriction_calls
+
+
+def test_ancestor_walk_detail_failure_degrades_to_policy() -> None:
+    """parentId 조회 실패는 수집을 깨지 않고 정책 폴백으로 진행한다."""
+
+    class _BrokenDetailClient(_FakeRestrictionWalkClient):
+        def get_page_detail(self, page_id: str) -> dict[str, Any]:
+            raise RuntimeError("boom")
+
+    provider = ConfluenceRestrictionAclProvider(
+        client=_BrokenDetailClient(restrictions={})
+    )
+
+    groups, users = provider.get_page_acl(page_id="page-1", space_key="ENG")
+
+    assert (groups, users) == ([], [])
+
+
+def test_adapter_passes_crawl_ancestor_chain_to_capable_provider() -> None:
+    """어댑터는 크롤 parent_id 체인을 capability provider 에 ancestor_ids 로 전달한다."""
+
+    class _CapturingProvider:
+        supports_ancestor_ids = True
+
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def get_page_acl(
+            self,
+            *,
+            page_id: str,
+            space_key: str,
+            ancestor_ids: Any = None,
+        ) -> tuple[list[str], list[str]]:
+            self.calls.append(
+                {"page_id": page_id, "space_key": space_key, "ancestor_ids": ancestor_ids}
+            )
+            return ["g"], []
+
+    provider = _CapturingProvider()
+    client = _FakeConfluenceClient(
+        spaces=[_space()],
+        descendants_by_homepage={"home-001": [_page_ref()]},
+        details_by_page={"page-001": _page_detail()},
+    )
+    adapter = AtlassianSourceAdapter(
+        cloud_id="cloud-synthetic",
+        access_token="token-synthetic",
+        client=client,
+        acl_provider=provider,  # type: ignore[arg-type]
+        request_delay_seconds=0,
+    )
+
+    pages = list(adapter.fetch_pages())
+
+    assert pages[0].allowed_groups == ["g"]
+    assert provider.calls[0]["page_id"] == "page-001"
+    # 단일 문서 크롤 — parent(parent-001)는 문서 목록 밖이라도 ACL 워크용 체인에 포함된다.
+    assert provider.calls[0]["ancestor_ids"] == ["parent-001"]
+
+
+def test_adapter_maps_space_id_and_name_to_page_object() -> None:
+    """A8 잔여 — SpaceInfo(id/name)가 PageObject.space_id/space_name 으로 흐른다."""
+    page = next(iter(_adapter().fetch_pages()))
+
+    assert page.space_id == "space-001"
+    assert page.space_name == "Engineering"

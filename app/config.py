@@ -25,6 +25,9 @@
     까지는 ``.env`` 의 ``RAG_CROSS_ENCODER_MODEL`` 로 우회 중이었으며 본 fix 로
     코드 기본값만으로도 운영 모드(``RAG_USE_REAL_ADAPTERS=true``) 에서 모델
     로드 성공.
+  - 2026-06-10, A2 후속 — atlassian_ancestor_restriction_lookup 토글 추가(기본 True).
+    빈 restriction 페이지가 조상 제한을 상속해 정확한 ACL 로 색인된다(종전 mark_missing
+    기본에선 색인 제외되던 페이지의 복구 — fail-closed 안전성은 유지).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, Pydantic 2.7+, pydantic-settings 2.3+
@@ -78,6 +81,10 @@ class Settings(BaseSettings):
     #   조회 구현 전까지 allow_authenticated 는 상속 제한 문서를 전체 인증 사용자에게 노출할
     #   수 있어 기본값으로 두지 않는다(코드 리뷰 A2 — 2026-06-10).
     atlassian_empty_restriction_policy: str = "mark_missing"
+    # 2026-06-10(A2 후속) — 빈 page restriction 시 조상 체인 restriction 을 조회해 상속
+    # ACL 을 산출한다(가까운 조상 우선, full crawl 은 payload parent_id 체인 재사용·delta 는
+    # get_page_detail 워크 + 캐시). False 면 종전 동작(빈 restriction → 즉시 정책 폴백).
+    atlassian_ancestor_restriction_lookup: bool = True
     # allow_authenticated 정책에서 부여할 "모든 인증 사용자" sentinel group 토큰.
     # 이 토큰이 실제 검색 허용이 되려면 RAG build_acl_filter가 동일 토큰을 모든
     # principal 그룹에 주입해야 한다(ingestion↔rag 공유 계약 — docs/db-schema.md §1.4).

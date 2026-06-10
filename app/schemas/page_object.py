@@ -10,6 +10,7 @@
   - 2026-05-17, 코드 리뷰 후속(P1-3) — Attachment.local_path 추가(비파괴): download_url은
     사용자 노출용 URL 의미로 동결, 청커가 파일을 직접 열 때는 local_path를 우선 사용
     (ADR-2026-001). 운영 어댑터는 local_path를 비워두고 다운로드 헬퍼로 채운다.
+  - 2026-06-10, A8 잔여 — space_id/space_name 필드 추가(출처 카드 spaceId/spaceName 원천).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, Pydantic 2.7+
@@ -69,6 +70,10 @@ class PageObject(BaseModel):
     labels: list[str] = Field(default_factory=list)
     ancestors: list[str] = Field(default_factory=list)
     attachments: list[Attachment] = Field(default_factory=list)
+    # 2026-06-10(A8 잔여) — 출처 카드 sources[].spaceId/spaceName 원천. 크롤 payload 의
+    # SpaceInfo(id/name)에서 채우며, 원천이 없는 공급원(fixture 의 id 등)은 빈 문자열 허용.
+    space_id: str = ""
+    space_name: str = ""
 
     @property
     def is_acl_missing(self) -> bool:

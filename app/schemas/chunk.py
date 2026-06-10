@@ -2,7 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
-작성목적 : Adaptive Chunker가 산출하는 청크와 메타데이터 19종을 정의하고,
+작성목적 : Adaptive Chunker가 산출하는 청크와 메타데이터 21종을 정의하고,
           멱등 upsert의 전제인 결정론적 chunk_id 생성 함수를 제공한다.
 작성일 : 2026-05-15
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
@@ -11,6 +11,8 @@
     강제(StrEnum이라 직렬화 의미는 동일, 잘못된 값 주입을 컴파일 시 차단)
   - 2026-06-10, 코드 리뷰 재점검(P4) — '첨부 전용 5종' 라벨을 'source_type 구분자 +
     첨부 전용 4종' 으로 정정(필드 수 불일치 해소). rag 레포와 미러.
+  - 2026-06-10, A8 잔여 — space_id/space_name 추가(공통 15종, 21종 체계 —
+    sources[].spaceId/spaceName 원천). 구버전 payload 호환 위해 기본 빈 문자열.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, Pydantic 2.7+
@@ -44,7 +46,7 @@ def make_chunk_id(page_id: str, chunk_index: int, attachment_id: str | None = No
 
 
 class ChunkMetadata(BaseModel):
-    """청크 메타데이터 19종 — 공통 13 + 첨부 5 + 검증 1 (chunking-strategy.md §6).
+    """청크 메타데이터 21종 — 공통 15 + 첨부 5 + 검증 1 (chunking-strategy.md §6).
 
     첨부 전용 4종(attachment_id/filename/mime, extracted_format)과 구분자 source_type 중
     첨부 4종은 본문 청크에서 None이며, source_type은 모든 청크가 명시한다.
@@ -61,6 +63,10 @@ class ChunkMetadata(BaseModel):
     # 본문은 DocType, 첨부는 AttachmentType. StrEnum이라 직렬화는 동일한 소문자 문자열.
     doc_type: DocType | AttachmentType
     space_key: str
+    # 2026-06-10(A8 잔여) — sources[].spaceId/spaceName 원천(BFF 영속 필드). 기존 색인
+    # payload 호환을 위해 기본 빈 문자열(검색 복원 시 .get 폴백 — search_node).
+    space_id: str = ""
+    space_name: str = ""
     allowed_groups: list[str]
     allowed_users: list[str]
     webui_link: str
