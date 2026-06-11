@@ -49,7 +49,9 @@ restriction API**(`GET /rest/api/content/{id}/restriction/byOperation/read`)로 
 ## 3. 결과 / 영향
 
 - credential 은 RabbitMQ·`/ml/ingest` payload 에 싣지 않는다. Data Ingestion Worker 는 `adminUserId`
-  로 auth-server 내부 credential API(api-spec §2-5)를 조회해 admin OAuth `accessToken`+`cloudId` 를 얻는다.
+  로 auth-server 내부 credential API(api-spec §2-5)를 조회해 **admin API Token + adminEmail + cloudId** 를
+  얻는다(api-spec v2.6.1, 2026-06-11 정정 — admin-key 는 OAuth 로 발급/사용 불가. admin-key 적용 호출은
+  `Authorization: Basic base64(adminEmail:adminApiToken)` 로 site URL 에서 수행).
 - Admin Key 말소는 수집 완료/실패 후 RabbitMQ completion event → BFF consumer → auth-server
   deactivate 로 처리한다(ML 직접 말소 없음 — api-spec v2.5).
 - 상위 folder/space 권한 상속 등 restriction 외 권한 결합은 후속 협의 대상이다(범위 밖).

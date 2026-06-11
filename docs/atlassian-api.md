@@ -17,6 +17,14 @@
 본 저장소는 `access_token` + `cloudid`를 입력으로 받아 데이터 수집 API를 호출한다.
 모든 데이터 수집 요청에 `Authorization: Bearer {access_token}` 헤더가 필요하다.
 
+> **⚠ admin-key 경로 예외 (api-spec v2.6.1, 2026-06-11 정정)**: page-level read restriction 우회용
+> **Admin Key 가 적용되는 호출은 OAuth Bearer 로 불가**하다(Confluence admin-key REST 리소스는
+> Forge/OAuth2/Connect 앱 접근 불가 — 공식). 해당 호출은 `Authorization: Basic
+> base64(adminEmail:adminApiToken)` + `Atl-Confluence-With-Admin-Key: true` 헤더로 **site URL**
+> (`https://{site}.atlassian.net/wiki/...`)에서 수행해야 한다 — 아래 OAuth 게이트웨이 URL
+> (`api.atlassian.com/ex/confluence/{cloudid}`) 경로에서는 admin-key 가 동작하지 않으며, 위반 시
+> restricted 페이지가 무음 누락된다. credential 모델 상세는 rag 레포 `docs/api-spec.md` §1-4·§2-5 참조.
+
 ## 데이터 수집 API
 
 API URL 형식: `https://api.atlassian.com/ex/confluence/{cloudid}/rest/api/...`
