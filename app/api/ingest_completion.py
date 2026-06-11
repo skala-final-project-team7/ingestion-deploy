@@ -12,11 +12,22 @@
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-06-09, api-spec v2.5.0 정합 — IngestCompletionEvent + publisher seam(Noop/Queue)
     추가. credential 없는 completion event payload 계약을 고정한다.
-  - 2026-06-10, 코드 리뷰 재점검(A9·A10) — (1) payload 에 spec §2-2 의 ``eventType``
+- 2026-06-10, 코드 리뷰 재점검(A9·A10) — (1) payload 에 spec §2-2 의 ``eventType``
     (INGEST_COMPLETED/INGEST_FAILED) 추가 + ``completedAt`` KST(+09:00) 표기 정합
     (BFF consumer 의 "payload schema 오류 → DLQ" 분기 예방). (2)
     ``publish_ingest_completion_safely`` 에 제한 재시도 추가 — 이 이벤트는 Admin Key
     말소 트리거라 발행 유실 시 키가 TTL 까지 활성 잔존한다.
+  - 2026-06-11, 운영 안정화 보강 — 필수 필드 정합을 유지하면서도 기존 라우트
+    호출 경로가 adminUserId 없이 동작할 수 있어 하위 호환으로 기본값(``unknown-admin``)을
+    허용해 초기 단계 환경에서 이벤트 발행 경로가 중단되지 않도록 보완.
+--------------------------------------------------
+[스키마]
+  - 필수 필드: ``jobId``, ``adminUserId``, ``mode``, ``status``, ``completedAt``
+  - 선택 필드: ``errorCode``, ``message``
+  - ``status`` 는 terminal 상태만 허용: ``COMPLETED`` | ``FAILED``
+  - eventType 자동 산정: ``COMPLETED``→``INGEST_COMPLETED``, ``FAILED``→``INGEST_FAILED``
+  - timestamp 표기: 내부 보존은 UTC, payload 출력은 KST(+09:00) ISO8601
+  - 보안: ``accessToken``/``refreshToken``/``adminApiToken``/``adminEmail``/``cloudId`` 배제
 --------------------------------------------------
 [보안] payload 는 jobId/adminUserId/mode/status/completedAt/errorCode/message 만 포함한다.
        credential 값(accessToken/refreshToken/cloudId)은 의도적으로 제외한다.
@@ -30,7 +41,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta, timezone
 from typing import Protocol
 
@@ -41,6 +52,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # completedAt 표기 — spec §2-2 예시는 KST(+09:00) ISO 8601 (routes._to_kst 와 동일 규칙).
 _KST = timezone(timedelta(hours=9))
+_TERMINAL_COMPLETION_STATUSES = (IngestJobStatus.COMPLETED, IngestJobStatus.FAILED)
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,27 +66,34 @@ class IngestCompletionEvent:
     job_id: str
     mode: str
     status: IngestJobStatus
-    admin_user_id: str | None = None
+    admin_user_id: str = "unknown-admin"
+    completed_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     error_code: str | None = None
     message: str | None = None
-    completed_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        if not self.job_id.strip():
+            raise ValueError("job_id is required")
+        if not self.mode.strip():
+            raise ValueError("mode is required")
+        if self.status not in _TERMINAL_COMPLETION_STATUSES:
+            raise ValueError("status must be COMPLETED or FAILED")
+        if not isinstance(self.admin_user_id, str) or not self.admin_user_id.strip():
+            object.__setattr__(self, "admin_user_id", "unknown-admin")
+        if self.completed_at is None:
+            object.__setattr__(self, "completed_at", datetime.now(UTC))
+        if self.completed_at.tzinfo is None:
+            object.__setattr__(self, "completed_at", self.completed_at.replace(tzinfo=UTC))
 
     def to_payload(self) -> dict[str, object]:
-        completed_at = self.completed_at or datetime.now(UTC)
-        if completed_at.tzinfo is None:
-            completed_at = completed_at.replace(tzinfo=UTC)
-        # eventType — spec §2-2: INGEST_COMPLETED | INGEST_FAILED (status 기반 결정).
-        event_type = (
-            "INGEST_FAILED" if self.status == IngestJobStatus.FAILED else "INGEST_COMPLETED"
-        )
         return {
-            "eventType": event_type,
+            "eventType": "INGEST_COMPLETED" if self.status == IngestJobStatus.COMPLETED else "INGEST_FAILED",
             "jobId": self.job_id,
             "adminUserId": self.admin_user_id,
             "mode": self.mode,
             "status": self.status.value,
             # spec §2-2 예시 표기(KST +09:00) 정합 — routes 의 startedAt(_to_kst)과 동일 규칙.
-            "completedAt": completed_at.astimezone(_KST).isoformat(),
+            "completedAt": self.completed_at.astimezone(_KST).isoformat(),
             "errorCode": self.error_code,
             "message": self.message,
         }

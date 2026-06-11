@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.config import Settings
 from app.ingestion.bootstrap import (
     build_chunking_worker_deps,
@@ -51,6 +53,9 @@ def test_build_chunking_worker_deps_shares_provided_raw_store() -> None:
 
 
 def test_build_chunking_worker_deps_real_threads_embedder_dimension(monkeypatch) -> None:
+    pytest.importorskip("sentence_transformers", reason="embedding optional dependency is not installed")
+    pytest.importorskip("torch", reason="sentence-transformers runtime dependency missing")
+
     # 회귀(B): 실 어댑터 모드에서 QdrantPoolStore.from_settings 가 임베더의 '실제' 차원을
     # 전달받아야 컬렉션 차원과 벡터 차원이 일치한다(비-기본 모델 시 mismatch 방지).
     # 이 파일은 원칙적으로 실 어댑터 경로를 통합 환경에서 검증하지만, 본 케이스는 무거운
