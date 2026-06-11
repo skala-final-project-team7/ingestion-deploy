@@ -11,7 +11,7 @@
 ## 2. 에이전트 의존성
 ```toml
 # pyproject.toml [project].dependencies
-"lina-ai-agents @ git+https://github.com/skala-final-project-team7/ai-agent.git@v0.1.0",
+"lina-ai-agents @ git+https://github.com/skala-final-project-team7/ai-agent.git@v0.1.1",
 ```
 app은 2개 에이전트를 **top-level 패키지명**으로 import한다(소스 6곳): `data_ingestion_agent`, `data_sync_agent`. ai-agent가 이 이름을 그대로 노출하면 import는 **무변경**으로 해결된다.
 
@@ -22,14 +22,35 @@ app은 2개 에이전트를 **top-level 패키지명**으로 import한다(소스
 | # | 문제(당시 main `f9f458c`) | 적용된 수정 (v0.1.0) |
 |---|---|---|
 | 1 | `app` 패키지 충돌 — `packages.find.include`에 `"app*"` 포함 | `app*` 제거, 6개 에이전트 패키지만 노출 ✅ |
-| 2 | 핀 가변 — release tag 없음(`@main`) | 태그 `v0.1.0` 발행, 본 레포 의존성 핀 `@v0.1.0` 으로 교체 완료 ✅ |
+| 2 | 핀 가변 — release tag 없음(`@main`) | 태그 `v0.1.0` 발행 ✅ (현재 핀은 `@v0.1.1` — §3b) |
 | 3 | (rag 공통) 배포 이름 `lina-rag-pipeline` | `lina-ai-agents` 로 변경 ✅ |
 
 > top-level 에이전트 패키지명 6종(data_ingestion_agent/data_sync_agent 포함)은 무변경 — app 코드 import 그대로 동작.
 
+## 3b. ✅ ai-agent v0.1.1 핀 확정 + admin-key config 정합 fix (2026-06-11)
+ai-agent 태그 **`v0.1.1`**(= main `fbe522d`, annotated) 확정에 따라 핀을 `@v0.1.0` → **`@v0.1.1`** 로 교체했다.
+v0.1.1 은 `data_ingestion_agent`/`data_sync_agent` 의 admin-key 모델을 확장한다(api-spec v2.6.1/2 정합):
+`DataIngestionConfig`/`DataSyncConfig` 에 `site_url`/`admin_email`/`admin_api_token` 필드 신설 +
+**`use_admin_key=True` 면 3필드 필수 검증(ValueError)** + vendored client 가 Basic+site URL 경로를 네이티브 내장.
+
+본 레포는 종전(v0.1.0 기준) `use_admin_key=True` 를 3필드 없이 생성했으므로 **핀 교체만 하면 admin-key
+운영 경로가 기동 시 즉사**한다(v0.1.1 런타임 실측: `ValueError: site_url is required when use_admin_key is true`).
+동반 코드 수정(완료):
+
+| 위치 | 변경 |
+|---|---|
+| `app/adapters/atlassian.py` `_build_admin_confluence_client` | config 에 `site_url`/`admin_email`/`admin_api_token` 실값 전달(기존 RuntimeError 가드로 비어 있지 않음 보장). `_AdminKeyBasicAuthConfluenceClient` 서브클래스는 v0.1.1 네이티브와 로직 동일(diff 확인) — 동작 고정 가드로 유지 |
+| `app/adapters/atlassian.py` `AtlassianSourceAdapter` | `admin_email`/`admin_api_token` 파라미터 신설(기본 ""), `_build_config` 가 **admin-key 경로 한정**으로 3필드 전달(OAuth 경로 생성 형태 무변경). `from_settings` 가 Settings 에서 주입 |
+| `app/ingestion/bootstrap.py` `build_request_source_adapter` | 어댑터 생성에 `admin_email`/`admin_api_token` 전달 추가 |
+
+- delta sync (`DataSyncConfig` 4필드 생성, `use_admin_key` 기본 False)·OAuth 경로는 v0.1.1 에서도 무변경 동작(실측 OK).
+- env 계약 무변경 — `RAG_ATLASSIAN_SITE_URL`/`RAG_ATLASSIAN_ADMIN_EMAIL`/`RAG_ATLASSIAN_ADMIN_API_TOKEN` 그대로.
+- ⚠ 설치본이 stale v0.1.0 인 환경에서 admin-key 경로는 `TypeError: unexpected keyword argument 'site_url'` 로
+  즉시 드러난다 — `pip install -e ...` 재실행으로 해소(의도된 loud-failure, 무음 드리프트 방지).
+
 ## 4. 빌드/검증 (Python 3.11)
 ```bash
-pip install -e '.[embedding,ingestion,dev]'   # ai-agent v0.1.0 + 파서 + ruff/pytest
+pip install -e '.[embedding,ingestion,dev]'   # ai-agent v0.1.1 + 파서 + ruff/pytest
 python -c "import app.api.main"            # 에이전트 import 해결 = ai-agent 설치 확인
 ./scripts/verify.sh                        # format → lint → test
 ```

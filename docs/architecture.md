@@ -82,7 +82,7 @@
 ## 5. 외부 에이전트 통합 (featureI-6 — 배포 레포는 설치형)
 
 - Data Ingestion Agent(FR-001)·Data Sync Agent(FR-005)는 별도 `ai-agent` 레포가 소유한
-  독립 패키지다. **본 배포 레포는 vendoring 하지 않고** `lina-ai-agents @ git+…@v0.1.0`
+  독립 패키지다. **본 배포 레포는 vendoring 하지 않고** `lina-ai-agents @ git+…@v0.1.1`
   외부 의존성으로 설치한다(top-level 패키지명 `data_ingestion_agent`/`data_sync_agent`
   동일 — import 무변경. `INTEGRATION.md` §1~§3). 에이전트 테스트·lint 는 ai-agent 레포
   소관이라 본 레포 `pyproject.toml` 에 별도 노출/제외 설정이 없다.

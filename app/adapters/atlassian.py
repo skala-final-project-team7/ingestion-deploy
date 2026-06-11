@@ -48,6 +48,13 @@
     ``RAG_ATLASSIAN_SITE_URL``) 기준으로 absolute 정규화해 적재한다. siteUrl 은 출처 링크
     정규화·admin-key 관리에만 쓰고 콘텐츠 조회 REST 에는 쓰지 않는다(그쪽은 cloudId
     게이트웨이 — backend docs/api-spec.md §2-5).
+  - 2026-06-11, ai-agent v0.1.1 핀 정합 — v0.1.1 의 ``DataIngestionConfig`` 는
+    ``use_admin_key=True`` 일 때 ``site_url``/``admin_email``/``admin_api_token`` 3필드를
+    필수 검증한다(미전달 시 ValueError 즉사 — v0.1.0 핀에서는 부재 필드라 전달 불가였음).
+    어댑터에 ``admin_email``/``admin_api_token`` 파라미터를 추가하고 ``_build_config``/
+    ``_build_admin_confluence_client`` 의 config 생성에 admin-key 경로 한정으로 3필드를
+    전달한다. v0.1.1 은 동일한 Basic+site URL 로직을 네이티브 내장하므로
+    ``_AdminKeyBasicAuthConfluenceClient`` 서브클래스는 이제 동작 고정 가드(중복 안전망)다.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x (vendored 에이전트가 enum.StrEnum 사용)
@@ -347,6 +354,8 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         timeout_seconds: int = 20,
         use_admin_key: bool = False,
         site_url: str = "",
+        admin_email: str = "",
+        admin_api_token: str = "",
     ) -> None:
         self._cloud_id = cloud_id
         self._access_token = access_token
@@ -358,6 +367,10 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         self._timeout_seconds = timeout_seconds
         self._use_admin_key = use_admin_key
         self._site_url = site_url
+        # ai-agent v0.1.1 — use_admin_key=True 면 vendored config 가 site_url 과 함께
+        # 필수 검증하는 admin credential (v0.1.0 에는 없던 필드).
+        self._admin_email = admin_email
+        self._admin_api_token = admin_api_token
 
     @classmethod
     def from_settings(cls, settings: Settings) -> AtlassianSourceAdapter:
@@ -389,6 +402,8 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
             timeout_seconds=settings.atlassian_timeout_seconds,
             use_admin_key=settings.atlassian_use_admin_key,
             site_url=settings.atlassian_site_url,
+            admin_email=settings.atlassian_admin_email,
+            admin_api_token=settings.atlassian_admin_api_token.get_secret_value(),
         )
 
     # --- DocumentSourceAdapter 인터페이스 ---
@@ -453,6 +468,18 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
     def _build_config(self, *, output_dir: str) -> Any:
         from data_ingestion_agent.config import DataIngestionConfig
 
+        # ai-agent v0.1.1 — use_admin_key=True 면 site_url/admin_email/admin_api_token 이
+        # vendored config 필수 검증 대상(누락 시 ValueError). admin-key 경로 한정으로만
+        # 전달해 OAuth 경로(use_admin_key=False)는 종전과 동일한 생성 형태를 유지한다.
+        admin_kwargs: dict[str, str] = (
+            {
+                "site_url": self._site_url,
+                "admin_email": self._admin_email,
+                "admin_api_token": self._admin_api_token,
+            }
+            if self._use_admin_key
+            else {}
+        )
         return DataIngestionConfig(
             cloud_id=self._cloud_id,
             access_token=self._access_token,
@@ -461,6 +488,7 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
             max_retries=self._max_retries,
             timeout_seconds=self._timeout_seconds,
             use_admin_key=self._use_admin_key,
+            **admin_kwargs,
         )
 
     def _to_page_object(
@@ -712,9 +740,12 @@ def _build_admin_confluence_client(settings: Settings) -> Any:
     재현되지 않았다. BE 확정 계약(v2.6.2 하이브리드)은 콘텐츠 조회를 OAuth Bearer+게이트웨이
     +Admin Key 헤더로 정의하되 **3단계 검증 게이트**로 남겼으므로, 게이트 통과 시까지 본
     Basic+site URL 클라이언트를 검증된 경로로 보존한다.
-    vendored ``ConfluenceClient`` 는 Bearer + ``api.atlassian.com`` 게이트웨이가 하드코딩돼
-    있으므로, **vendoring 무수정 보존** 원칙에 따라 본 어댑터가 ``_headers``/``_build_url``
-    만 오버라이드한 서브클래스를 조립한다(rag 레포의 OpenAI transport 교체와 동일 seam).
+    ai-agent **v0.1.1** 부터 vendored ``ConfluenceClient`` 가 동일한 Basic+site URL 로직을
+    네이티브 내장하며(config 의 ``site_url``/``admin_email``/``admin_api_token`` 소비 —
+    ``use_admin_key=True`` 면 3필드 필수 검증), 본 어댑터는 같은 값으로 config 를 채워
+    전달한다. ``_headers``/``_build_url`` 오버라이드 서브클래스는 vendored 와 로직이
+    동일함을 diff 로 확인했고(2026-06-11), 향후 vendored 변경에 흔들리지 않는 **동작 고정
+    가드(중복 안전망)** 로 유지한다(rag 레포의 OpenAI transport 교체와 동일 seam).
 
     Raises:
         RuntimeError: ``atlassian_site_url`` / ``atlassian_admin_email`` /
@@ -769,6 +800,12 @@ def _build_admin_confluence_client(settings: Settings) -> Any:
         max_retries=settings.atlassian_max_retries,
         timeout_seconds=settings.atlassian_timeout_seconds,
         use_admin_key=True,
+        # ai-agent v0.1.1 — use_admin_key=True 필수 검증 3필드(위 RuntimeError 가드로
+        # 비어 있지 않음이 보장된 실값). vendored 네이티브 admin-key 경로도 같은 값으로
+        # 동작하므로 서브클래스 오버라이드와 결과가 일치한다.
+        site_url=site_url,
+        admin_email=admin_email,
+        admin_api_token=admin_api_token,
     )
     return _AdminKeyBasicAuthConfluenceClient(config=config)
 

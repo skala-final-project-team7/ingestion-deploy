@@ -31,6 +31,10 @@
     full crawl/delta 양 경로의 ``webui_link`` 가 absolute 로 적재되게 한다. atlassian
     소스인데 site_url 미주입이면 출처 링크가 상대경로로 남는다는 WARNING 을 1회 남긴다
     (_warn_if_site_url_missing).
+  - 2026-06-11, ai-agent v0.1.1 핀 정합 — build_request_source_adapter 의 어댑터 생성에
+    admin_email/admin_api_token 전달 추가. v0.1.1 vendored config 는 use_admin_key=True 일
+    때 site_url/admin_email/admin_api_token 3필드를 필수 검증한다(어댑터 _build_config 가
+    admin-key 경로 한정으로 전달 — app/adapters/atlassian.py 동일자 이력 참조).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -352,6 +356,11 @@ def build_request_source_adapter(
         timeout_seconds=settings.atlassian_timeout_seconds,
         use_admin_key=settings.atlassian_use_admin_key,
         site_url=settings.atlassian_site_url,
+        # ai-agent v0.1.1 — use_admin_key=True 면 vendored config 가 site_url 과 함께
+        # 필수 검증하는 admin credential 2종(어댑터 _build_config 가 admin-key 경로
+        # 한정으로 전달).
+        admin_email=settings.atlassian_admin_email,
+        admin_api_token=settings.atlassian_admin_api_token.get_secret_value(),
     )
 
 
