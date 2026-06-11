@@ -98,3 +98,23 @@ def test_build_chunking_worker_deps_real_threads_embedder_dimension(monkeypatch)
     # 기본값 1024 가 아니라 임베더가 보고한 768 이 전달되어야 한다.
     assert captured["dense_dimension"] == 768
     assert deps.dense_embedder.dimension == 768
+
+
+def test_default_completion_queue_settings() -> None:
+    settings = Settings()
+
+    assert settings.ingest_completion_routing_key == "lina.admin.ingest.completion"
+    assert settings.ingest_completion_queue == "lina.admin.ingest.completion"
+    assert settings.ingest_completion_dlq == "lina.admin.ingest.completion.dlq"
+
+
+def test_override_completion_queue_settings() -> None:
+    settings = Settings(
+        ingest_completion_routing_key="completion.key",
+        ingest_completion_queue="completion.queue",
+        ingest_completion_dlq="completion.queue.dlq",
+    )
+
+    assert settings.ingest_completion_routing_key == "completion.key"
+    assert settings.ingest_completion_queue == "completion.queue"
+    assert settings.ingest_completion_dlq == "completion.queue.dlq"
