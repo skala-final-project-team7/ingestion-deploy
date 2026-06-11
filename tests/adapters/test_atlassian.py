@@ -21,6 +21,7 @@ from app.adapters.atlassian import (
     AtlassianSourceAdapter,
     ConfluenceRestrictionAclProvider,
     build_restriction_acl_provider,
+    normalize_webui_link,
     parse_empty_restriction_policy,
     parse_group_identifier_fields,
     parse_read_restrictions_acl,
@@ -736,3 +737,65 @@ def test_resolve_acl_provider_failure_degrades_fail_closed() -> None:
     assert len(pages) == 1
     assert (pages[0].allowed_groups, pages[0].allowed_users) == ([], [])
     assert pages[0].is_acl_missing
+
+
+# --- webui_link absolute 정규화 (backend-template 동기화 2026-06-11 — api-spec §2-5 siteUrl) ---
+
+
+def test_normalize_webui_link_prefixes_site_url_for_wiki_paths() -> None:
+    # v1 형(/wiki/ 포함) 상대경로 — site_url 만 앞에 붙는다.
+    assert normalize_webui_link("/wiki/spaces/ENG/pages/1/T", "https://lina.atlassian.net") == (
+        "https://lina.atlassian.net/wiki/spaces/ENG/pages/1/T"
+    )
+    # trailing slash 는 정규화한다.
+    assert normalize_webui_link("/wiki/x", "https://lina.atlassian.net/") == (
+        "https://lina.atlassian.net/wiki/x"
+    )
+
+
+def test_normalize_webui_link_adds_wiki_base_for_v2_relative_paths() -> None:
+    # v2 API `_links.webui` 는 /wiki base 상대경로(/spaces/...)로 온다.
+    assert normalize_webui_link("/spaces/ENG/pages/1/T", "https://lina.atlassian.net") == (
+        "https://lina.atlassian.net/wiki/spaces/ENG/pages/1/T"
+    )
+
+
+def test_normalize_webui_link_keeps_absolute_and_empty_inputs() -> None:
+    absolute = "https://lina.atlassian.net/wiki/spaces/ENG/pages/1/T"
+    assert normalize_webui_link(absolute, "https://other.atlassian.net") == absolute
+    # 빈 site_url(미주입 환경)·빈 webui 는 passthrough — 조립부 WARNING 으로 안내.
+    assert normalize_webui_link("/wiki/x", "") == "/wiki/x"
+    assert normalize_webui_link("", "https://lina.atlassian.net") == ""
+
+
+def test_fetch_pages_normalizes_webui_link_when_site_url_set() -> None:
+    """site_url 주입 시 Qdrant webui_link/RAG sources[].url 이 absolute 로 적재된다(§2-5)."""
+    client = _FakeConfluenceClient(
+        spaces=[_space()],
+        descendants_by_homepage={"home-001": [_page_ref()]},
+        details_by_page={"page-001": _page_detail()},
+    )
+    adapter = AtlassianSourceAdapter(
+        cloud_id="cloud-synthetic",
+        access_token="token-synthetic",
+        client=client,
+        request_delay_seconds=0,
+        site_url="https://lina.atlassian.net",
+    )
+
+    page = next(iter(adapter.fetch_pages()))
+
+    assert page.webui_link == "https://lina.atlassian.net/wiki/spaces/ENG/pages/page-001/Runbook"
+
+
+def test_from_settings_passes_site_url_for_webui_normalization() -> None:
+    settings = Settings(
+        source_type="atlassian",
+        atlassian_cloud_id="cloud-1",
+        atlassian_access_token=SecretStr("token-1"),
+        atlassian_site_url="https://lina.atlassian.net",
+    )
+
+    adapter = AtlassianSourceAdapter.from_settings(settings)
+
+    assert adapter._site_url == "https://lina.atlassian.net"  # noqa: SLF001 — 배선 검증

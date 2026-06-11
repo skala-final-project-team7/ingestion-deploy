@@ -24,6 +24,14 @@
 > (`https://{site}.atlassian.net/wiki/...`)에서 수행해야 한다 — 아래 OAuth 게이트웨이 URL
 > (`api.atlassian.com/ex/confluence/{cloudid}`) 경로에서는 admin-key 가 동작하지 않으며, 위반 시
 > restricted 페이지가 무음 누락된다. credential 모델 상세는 rag 레포 `docs/api-spec.md` §1-4·§2-5 참조.
+>
+> **하이브리드 확정 (api-spec v2.6.2 — BE 2026-06-11)**: 위 "OAuth 불가" 제약의 **확정 적용 범위는
+> admin-key 관리(activate/deactivate) 호출**이며 auth-server 내부 전용이다(ML 은 admin API Token
+> 비취급). 콘텐츠 조회의 계약은 OAuth Bearer + 게이트웨이 + Admin Key 헤더이나 **3단계 검증
+> 게이트**로 남아 있다 — ML 실측은 Basic + site URL 조합만 확인됐으므로 본 레포는
+> `RAG_ATLASSIAN_USE_ADMIN_KEY` 토글로 검증된 경로를 보존한다. §2-5 응답은
+> `{accessToken, cloudId, siteUrl, expiresAt}` — **`siteUrl`(=`admin_atlassian_credential.site_url`
+> 단일 컬럼)은 `_links.webui` 상대경로의 absolute 정규화에 사용**한다(아래 매핑표).
 
 ## 데이터 수집 API
 
@@ -66,7 +74,7 @@ API URL 형식: `https://api.atlassian.com/ex/confluence/{cloudid}/rest/api/...`
 | `space.key` | `space_key` | |
 | `metadata.labels.results[].name` | `labels[]` | |
 | `ancestors[].{id,title}` | `ancestors[]` | |
-| `_links.webui` | `webui_link` | 출처 카드 원본 링크 |
+| `_links.webui` | `webui_link` | 출처 카드 원본 링크 — **상대경로를 §2-5 `siteUrl`(=`RAG_ATLASSIAN_SITE_URL`) 기준 absolute 로 정규화해 적재**(`normalize_webui_link`, 2026-06-11). 미주입 시 상대경로 passthrough + WARNING |
 | `attachments[]` | `attachments[]` | 샘플 데이터에 메타만 존재 — 실제 다운로드/추출은 별도 |
 | read restriction | `allowed_groups[]` / `allowed_users[]` | page-level read restriction 에서 산출(Admin Key); 빈 권한은 공개 sentinel `"*"` — 아래 "✓ ACL 결정" 참조 |
 

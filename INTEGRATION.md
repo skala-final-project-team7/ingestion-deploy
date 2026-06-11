@@ -47,9 +47,21 @@ python -c "import app.api.main"            # 에이전트 import 해결 = ai-age
 - 분기 토글: `RAG_USE_REAL_ADAPTERS=true` (미설정 시 PoC 모드 — 기동 로그에 **WARNING** 출력, 실 Qdrant 미적재)
 - RabbitMQ: `RAG_RABBITMQ_URL` (발행·소비 공용, durable 큐 자동 선언, persistent 발행)
 - 연결 수명: API 는 **잡 단위** 연결(BackgroundTasks threadpool 안전), 워커는 장기 연결 + 자동 재접속(backoff)·SIGTERM 우아 종료·prefetch=1
-- Confluence 자격증명: BFF 가 잡마다 `accessToken`/`cloudId` 전달(v2.5.0) — Settings `RAG_ATLASSIAN_*` 는 fallback. 둘 다 없으면 잡이 명시 FAILED
+- Confluence 자격증명(정본 = api-spec v2.6.2 §2-5): preferred 는 잡 본문 `adminUserId` 로 Worker 가 auth-server `GET /internal/auth/admin-confluence-credential` 을 조회해 **`accessToken`(OAuth)+`cloudId`+`siteUrl`** 을 얻는 경로다(§2-5 클라이언트 wiring 은 후속 — featureI-7c). 현 구현 대체 경로: 잡 본문 legacy `accessToken`/`cloudId` 또는 Settings `RAG_ATLASSIAN_*`. 둘 다 없으면 잡이 명시 FAILED
+
+## 4c. backend-template 동기화 (2026-06-11) — site_url 단일화·§2-5 `siteUrl`·webui_link 정규화
+backend-template 2026-06-11 확정(커밋 `6bfc668`·`bfef3cb`)을 반영했다:
+
+| 항목 | 내용 |
+|---|---|
+| site_url 단일화 | BE DB 는 `admin_atlassian_credential.site_url` **한 곳**에만 저장(V004, db-schema §6.4). `public_site_url` 같은 별도 명칭 없음. §2-5 가 JSON `siteUrl`(camel) 로 ingestion 에 전달 — **env `RAG_ATLASSIAN_SITE_URL` = 이 값과 동일해야 한다** (`https://{site}.atlassian.net`) |
+| §2-5 응답 | `{accessToken, cloudId, siteUrl, expiresAt}` — admin API Token 은 미반환(auth-server 내부 admin-key 관리 전용). v2.6.1 의 `adminApiToken`/`adminEmail` 반환 모델은 폐기 |
+| webui_link 정규화 (**코드 수정**) | 종전엔 에이전트의 `_links.webui` **상대경로가 그대로** Qdrant `webui_link`/RAG `sources[].url` 에 적재됐다(FE 출처 링크 깨짐). full crawl(`app/adapters/atlassian.py`)·delta(`app/ingestion/sync.py`) 양 경로에 `normalize_webui_link`(site_url 기준 absolute) 적용. **atlassian 소스 + `RAG_ATLASSIAN_SITE_URL` 미주입이면 WARNING + 상대경로 유지** — 운영에서는 반드시 주입 |
+| 하이브리드 모델 | 콘텐츠 조회 계약 = OAuth Bearer + 게이트웨이 + `Atl-Confluence-With-Admin-Key` 헤더. 단 이 조합은 BE **3단계 검증 게이트** — ML 실측(2026-06-02)은 API Token Basic+site URL 만 확인됐으므로 `RAG_ATLASSIAN_USE_ADMIN_KEY=true` 경로(검증된 구현)는 게이트 통과 시까지 보존 |
+
+> 회귀: 변경 후 테스트 205 passed(신규 7 포함 — 정규화 헬퍼·full crawl 5 + delta 2), ruff clean. (sandbox 3.10 호환 심 기준 — 맥 3.11 에서 `./scripts/verify.sh` 재확인 권장)
 
 ## 5. 참고 문서 (원본 워크스페이스)
 - `HANDOFF-ML-2026-06-09.md` — 인프라 seam·운영 기본값 §4·§5
 - `SHARED-SURFACE-2026-06-09.md` — `lina-shared` 공유표면 추출(별개 작업, 미포함)
-- `rag/docs/api-spec.md` (v2.6.1) — 정본 계약
+- `rag/docs/api-spec.md` (v2.6.2) — 정본 계약 (backend-template `docs/api-spec.md` 2026-06-11 자와 동기)

@@ -20,6 +20,10 @@
     않고 failed_items 로 집계된다.
   - 2026-06-10, A8 잔여 — delta 변환에 space_id/space_name 매핑 추가
     (ChangedDocument.space dict → PageObject — 출처 카드 spaceId/spaceName 원천).
+  - 2026-06-11, backend-template 동기화(§2-5 siteUrl — api-spec v2.6.2) — delta 변환의
+    ``webui_link`` 도 full crawl 과 동일하게 ``normalize_webui_link`` 로 absolute 정규화
+    (``run_delta_sync(site_url=...)`` seam 추가). site_url 은 §2-5 ``siteUrl``
+    (=``admin_atlassian_credential.site_url`` 단일 컬럼) 대응 값이다.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -38,7 +42,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
-from app.adapters.atlassian import PageAclProvider
+from app.adapters.atlassian import PageAclProvider, normalize_webui_link
 from app.adapters.base import DocumentSourceAdapter
 from app.adapters.json_fixture import parse_atlassian_datetime
 from app.ingestion.crawler import build_chunking_message
@@ -190,6 +194,7 @@ def run_delta_sync(
     workflow_runner: _DeltaSyncWorkflowRunner | None = None,
     force_sequential: bool = True,
     acl_provider: PageAclProvider | None = None,
+    site_url: str = "",
 ) -> DeltaSyncResult:
     """Delta Sync 실행 (FR-005).
 
@@ -211,6 +216,9 @@ def run_delta_sync(
         acl_provider: page-level ACL provider seam — **full crawl 과 동일 객체를 주입**해
             delta 재수집이 restriction ACL 을 space 합성 ACL 로 덮어쓰지 않게 한다
             (코드 리뷰 A3). None 이면 PoC space_key 합성 폴백(full crawl 기본과 동일).
+        site_url: Confluence base URL(``https://{site}.atlassian.net``) — §2-5 ``siteUrl``
+            대응 값. 설정 시 변경 페이지 ``webui_link`` 를 absolute 로 정규화한다
+            (full crawl 어댑터와 동일 — ``normalize_webui_link``). 빈 값이면 passthrough.
 
     Returns:
         변경·삭제 후보 집계를 담은 ``DeltaSyncResult``.
@@ -248,7 +256,9 @@ def run_delta_sync(
         # 발행 실패 1건이 delta 잡 전체를 죽이지 않게 한다. 실패 건은 failed_items 로
         # 집계하고 다음 페이지로 진행한다(부분 발행 잔존 방지).
         try:
-            page = _changed_document_to_page_object(changed, acl_provider=acl_provider)
+            page = _changed_document_to_page_object(
+                changed, acl_provider=acl_provider, site_url=site_url
+            )
             raw_store.save_page(page)
             publisher.publish(routing_key=QUEUE_CHUNKING, message=build_chunking_message(page))
         except Exception:  # noqa: BLE001 — 페이지 단위 격리(매핑·적재·발행 전 구간)
@@ -295,7 +305,7 @@ def _default_delta_workflow_runner() -> _DeltaSyncWorkflowRunner:
 
 
 def _changed_document_to_page_object(
-    changed: Any, *, acl_provider: PageAclProvider | None = None
+    changed: Any, *, acl_provider: PageAclProvider | None = None, site_url: str = ""
 ) -> PageObject:
     """vendored ChangedDocument(dict 기반 space/page/body) → 표준 PageObject 변환.
 
@@ -329,7 +339,7 @@ def _changed_document_to_page_object(
         last_modified=_parse_changed_last_modified(str(page.get("last_modified_at") or "")),
         allowed_groups=allowed_groups,
         allowed_users=allowed_users,
-        webui_link=str(page.get("page_url") or ""),
+        webui_link=normalize_webui_link(str(page.get("page_url") or ""), site_url),
         labels=[],
         ancestors=[],
         attachments=[],

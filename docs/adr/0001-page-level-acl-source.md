@@ -49,9 +49,14 @@ restriction API**(`GET /rest/api/content/{id}/restriction/byOperation/read`)로 
 ## 3. 결과 / 영향
 
 - credential 은 RabbitMQ·`/ml/ingest` payload 에 싣지 않는다. Data Ingestion Worker 는 `adminUserId`
-  로 auth-server 내부 credential API(api-spec §2-5)를 조회해 **admin API Token + adminEmail + cloudId** 를
-  얻는다(api-spec v2.6.1, 2026-06-11 정정 — admin-key 는 OAuth 로 발급/사용 불가. admin-key 적용 호출은
-  `Authorization: Basic base64(adminEmail:adminApiToken)` 로 site URL 에서 수행).
+  로 auth-server 내부 credential API(api-spec §2-5)를 조회해 **admin OAuth accessToken + cloudId +
+  siteUrl** 을 얻는다(api-spec v2.6.2 — BE 하이브리드 확정 2026-06-11: admin API Token 은 auth-server
+  내부 admin-key 관리 전용으로 §2-5 가 반환하지 않음). `siteUrl`(=BE `admin_atlassian_credential.site_url`
+  단일 컬럼, `public_site_url` 별도 명칭 없음)은 출처 링크(`_links.webui` 상대경로)의 absolute 정규화에만
+  쓴다(→ Qdrant `webui_link`/RAG `sources[].url`). 콘텐츠 조회는 OAuth Bearer + 게이트웨이
+  (`/ex/confluence/{cloudId}/...`) + Admin Key 헤더가 계약이나 **3단계 검증 게이트** — ML 실측
+  (2026-06-02)은 admin API Token Basic + site URL 조합만 확인됐으므로, 구현은
+  `RAG_ATLASSIAN_USE_ADMIN_KEY` 토글로 검증된 경로를 보존한다(게이트 통과 시 OAuth 경로 전환).
 - Admin Key 말소는 수집 완료/실패 후 RabbitMQ completion event → BFF consumer → auth-server
   deactivate 로 처리한다(ML 직접 말소 없음 — api-spec v2.5).
 - 상위 folder/space 권한 상속 등 restriction 외 권한 결합은 후속 협의 대상이다(범위 밖).

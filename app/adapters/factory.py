@@ -47,7 +47,7 @@ def build_source_adapter(settings: Settings | None = None) -> DocumentSourceAdap
         return JsonFixtureSourceAdapter(samples_dir=resolved.samples_dir)
     if source_type == "atlassian":
         # vendored Data Ingestion Agent 를 감싸는 어댑터(featureI-6).
-        # 자격증명 모델(api-spec v2.6.1, 2026-06-11 정정):
+        # 자격증명 모델(v2.6.1 정정 → v2.6.2 하이브리드 — admin-key 경로는 ML 실측 보존):
         #   - admin-key 경로(use_admin_key=True): admin API Token Basic + site URL —
         #     site_url/admin_email/admin_api_token 필수(OAuth access_token 불필요).
         #   - OAuth 경로(False): Bearer 사용자 토큰 — cloud_id/access_token 필수.

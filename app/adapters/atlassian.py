@@ -40,6 +40,14 @@
     restricted 페이지가 무음 누락되던 결함의 해소. (2) 회의 결정(2026-06-11)에 따라
     ACL 값의 space key 레거시 완전 제거 — synthesize_space_acl·space_fallback 정책 삭제,
     provider 부재 시 빈 ACL(fail-closed) 반환(ADR 0002 superseded).
+  - 2026-06-11, backend-template 동기화(§2-5 siteUrl·site_url 단일화 — api-spec v2.6.2) —
+    ``normalize_webui_link`` 신설 + 어댑터 ``site_url`` 주입. 에이전트 ``page_url`` 은
+    Confluence ``_links.webui`` **상대경로 그대로**라 Qdrant ``webui_link``/RAG
+    ``sources[].url`` 에 상대경로가 적재되던 결함을 해소한다: §2-5 credential lookup 이
+    반환하는 ``siteUrl``(=DB ``admin_atlassian_credential.site_url`` 단일 컬럼, env 로는
+    ``RAG_ATLASSIAN_SITE_URL``) 기준으로 absolute 정규화해 적재한다. siteUrl 은 출처 링크
+    정규화·admin-key 관리에만 쓰고 콘텐츠 조회 REST 에는 쓰지 않는다(그쪽은 cloudId
+    게이트웨이 — backend docs/api-spec.md §2-5).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x (vendored 에이전트가 enum.StrEnum 사용)
@@ -52,7 +60,8 @@
     ADR 0002 superseded). 실 수집은 admin-key 경로(True)를 사용한다.
   - ``atlassian_use_admin_key=True``: admin API Token 의 Basic 인증 + Admin Key 헤더로
     **site URL** 에서 ``/rest/api/content/{pageId}/restriction/byOperation/read`` 를 조회해
-    ``allowed_groups``/``allowed_users`` 산출(api-spec v2.6.1 §1-4 ④⑤). restriction 이
+    ``allowed_groups``/``allowed_users`` 산출(v2.6.1 §1-4 ④⑤ 도입 — v2.6.2 하이브리드에서
+    ML 실측 보존 경로, OAuth+게이트웨이 조합은 3단계 검증 게이트). restriction 이
     비어 있을 때의 처리는 ``atlassian_empty_restriction_policy`` 로 분기:
       * ``allow_authenticated`` (opt-in — 기본은 ``mark_missing``): ``[public_acl_group]`` 부여
         → 모든 인증 사용자 허용(상속 제한 미반영 위험 — A2).
@@ -81,6 +90,34 @@ if TYPE_CHECKING:
 
 # space_fallback 은 2026-06-11 제거 — ACL 값에 space key 를 싣는 레거시 폐기(ADR 0002 superseded).
 EMPTY_RESTRICTION_POLICIES = frozenset({"mark_missing", "allow_authenticated"})
+
+
+def normalize_webui_link(webui_link: str, site_url: str) -> str:
+    """Confluence ``_links.webui`` 상대경로를 ``site_url`` 기준 absolute URL 로 정규화한다.
+
+    backend api-spec §2-5(2026-06-11): credential lookup 응답의 ``siteUrl``
+    (=``admin_atlassian_credential.site_url`` 단일 컬럼, ``https://{site}.atlassian.net``)은
+    ingestion 이 출처 링크를 absolute 로 정규화해 Qdrant ``webui_link``/RAG ``sources[].url``
+    에 적재하기 위한 값이다(콘텐츠 조회 REST 에는 미사용 — 그쪽은 cloudId 게이트웨이).
+
+    규칙(admin-key 클라이언트 ``_build_url`` 의 경로 분기와 동일):
+      - 이미 absolute(``http://``/``https://``) → 그대로.
+      - ``/wiki/...`` → ``{site_url}{path}`` (v1 형 webui — ``/wiki`` 포함).
+      - 그 외 ``/...`` → ``{site_url}/wiki{path}`` (v2 API webui 는 ``/wiki`` base 상대).
+      - 빈 ``webui_link`` 또는 빈 ``site_url`` → 입력 그대로(PoC fixture·미주입 환경 보존
+        — 조립부가 미주입을 WARNING 으로 알린다).
+    """
+    link = webui_link.strip()
+    base = site_url.strip().rstrip("/")
+    if not link or not base:
+        return webui_link
+    if link.startswith(("http://", "https://")):
+        return link
+    if not link.startswith("/"):
+        link = f"/{link}"
+    if link.startswith("/wiki/"):
+        return f"{base}{link}"
+    return f"{base}/wiki{link}"
 
 
 class _WorkflowRunner(Protocol):
@@ -292,6 +329,9 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
             ``run_full_crawl_workflow``. 테스트에서 교체 가능.
         request_delay_seconds / max_retries / timeout_seconds: 에이전트 호출 속도·재시도 설정.
         use_admin_key: vendored 에이전트 Confluence 요청에 Admin Key header 포함 여부.
+        site_url: Confluence base URL(``https://{site}.atlassian.net``) — §2-5 ``siteUrl``
+            대응 값. 설정 시 ``webui_link`` 를 absolute 로 정규화해 적재한다
+            (``normalize_webui_link``). 빈 값이면 상대경로 그대로(passthrough).
     """
 
     def __init__(
@@ -306,6 +346,7 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         max_retries: int = 3,
         timeout_seconds: int = 20,
         use_admin_key: bool = False,
+        site_url: str = "",
     ) -> None:
         self._cloud_id = cloud_id
         self._access_token = access_token
@@ -316,12 +357,13 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         self._max_retries = max_retries
         self._timeout_seconds = timeout_seconds
         self._use_admin_key = use_admin_key
+        self._site_url = site_url
 
     @classmethod
     def from_settings(cls, settings: Settings) -> AtlassianSourceAdapter:
         """Settings 자격증명으로 어댑터를 생성한다(팩토리 경로).
 
-        ``atlassian_use_admin_key=True`` (운영 admin-key 경로 — api-spec v2.6.1):
+        ``atlassian_use_admin_key=True`` (운영 admin-key 경로 — v2.6.1 도입·v2.6.2 보존):
         admin API Token 의 Basic 인증 + site URL 클라이언트(``_build_admin_confluence_client``)
         를 crawl workflow 에 주입하고, 동일 모델의 ``ConfluenceRestrictionAclProvider`` 로
         page-level read restriction 을 조회한다. OAuth access_token 은 이 경로에서 쓰지
@@ -346,6 +388,7 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
             max_retries=settings.atlassian_max_retries,
             timeout_seconds=settings.atlassian_timeout_seconds,
             use_admin_key=settings.atlassian_use_admin_key,
+            site_url=settings.atlassian_site_url,
         )
 
     # --- DocumentSourceAdapter 인터페이스 ---
@@ -436,7 +479,7 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
             body.storage_html       → body_html  (청커가 HTML 파싱)
             page.version_number     → version_number
             page.last_modified_at   → last_modified (ISO 8601 파싱)
-            page.page_url           → webui_link
+            page.page_url           → webui_link (site_url 설정 시 absolute 정규화 — §2-5 siteUrl)
             page.parent_id 체인      → ancestors(제목, 루트→직계) + ACL 조상 워크(A2)
             restriction API         → allowed_groups/allowed_users (Admin Key 경로)
             (admin key off)         → allowed_groups/allowed_users (PoC space 합성)
@@ -464,7 +507,7 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
             last_modified=_parse_last_modified(document.page.last_modified_at),
             allowed_groups=allowed_groups,
             allowed_users=allowed_users,
-            webui_link=document.page.page_url,
+            webui_link=normalize_webui_link(document.page.page_url, self._site_url),
             labels=[],
             ancestors=ancestor_titles,
             attachments=[],
@@ -663,9 +706,12 @@ def build_admin_basic_authorization(admin_email: str, admin_api_token: str) -> s
 
 
 def _build_admin_confluence_client(settings: Settings) -> Any:
-    """admin-key credential 경로용 ConfluenceClient — Basic 인증 + site URL (api-spec v2.6.1).
+    """admin-key credential 경로용 ConfluenceClient — Basic 인증 + site URL (v2.6.1 도입).
 
-    Feature 0 게이트 결론: admin-key 는 OAuth Bearer/게이트웨이 경로에서 동작하지 않는다.
+    Feature 0 게이트 ML 실측(2026-06-02): admin-key 우회는 OAuth Bearer/게이트웨이 조합에서
+    재현되지 않았다. BE 확정 계약(v2.6.2 하이브리드)은 콘텐츠 조회를 OAuth Bearer+게이트웨이
+    +Admin Key 헤더로 정의하되 **3단계 검증 게이트**로 남겼으므로, 게이트 통과 시까지 본
+    Basic+site URL 클라이언트를 검증된 경로로 보존한다.
     vendored ``ConfluenceClient`` 는 Bearer + ``api.atlassian.com`` 게이트웨이가 하드코딩돼
     있으므로, **vendoring 무수정 보존** 원칙에 따라 본 어댑터가 ``_headers``/``_build_url``
     만 오버라이드한 서브클래스를 조립한다(rag 레포의 OpenAI transport 교체와 동일 seam).

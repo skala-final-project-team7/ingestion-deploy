@@ -26,6 +26,11 @@
     build_real_delta_runner / build_real_completion_publisher 추가. 종전에는 API 가
     use_real_adapters=True 에서도 run_poc_ingestion(전부 Fake)으로 고정되어 실 Qdrant 에
     아무것도 적재되지 않았다(무음 결함 — build_ingest_deps 의 운영 분기에서 소비).
+  - 2026-06-11, backend-template 동기화(§2-5 siteUrl — api-spec v2.6.2) — delta 러너와
+    요청 자격증명 어댑터에 ``settings.atlassian_site_url``(=§2-5 ``siteUrl``) 을 배선해
+    full crawl/delta 양 경로의 ``webui_link`` 가 absolute 로 적재되게 한다. atlassian
+    소스인데 site_url 미주입이면 출처 링크가 상대경로로 남는다는 WARNING 을 1회 남긴다
+    (_warn_if_site_url_missing).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -36,6 +41,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -56,6 +62,25 @@ if TYPE_CHECKING:
     from app.ingestion.crawler import CrawlRequest, CrawlResult
     from app.ingestion.document_analyzer import DocumentAnalyzer
     from app.ingestion.soft_delete import SoftDeleteStore
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _warn_if_site_url_missing(settings: Settings) -> None:
+    """atlassian 소스인데 ``atlassian_site_url`` 미주입이면 WARNING 1회.
+
+    backend api-spec §2-5(2026-06-11): credential lookup 응답 ``siteUrl``
+    (=``admin_atlassian_credential.site_url``)은 출처 링크(`_links.webui` 상대경로)를
+    absolute 로 정규화해 Qdrant ``webui_link``/RAG ``sources[].url`` 에 적재하기 위한
+    값이다. 미주입이면 출처 링크가 상대경로로 남아 FE 출처 카드가 깨진다(무음 결함
+    방지 — 기동/조립 시점에 알린다). env: ``RAG_ATLASSIAN_SITE_URL``.
+    """
+    if settings.source_type.lower() == "atlassian" and not settings.atlassian_site_url:
+        _LOGGER.warning(
+            "RAG_ATLASSIAN_SITE_URL 이 비어 있다 — webui_link/sources[].url 이 상대경로로 "
+            "적재된다. §2-5 credential lookup 의 siteUrl 값(https://{site}.atlassian.net)을 "
+            "주입하라(backend docs/api-spec.md §2-5, site_url 단일화 2026-06-11)."
+        )
 
 
 def build_raw_page_store(settings: Settings | None = None) -> RawPageStore:
@@ -154,7 +179,7 @@ def build_attachment_downloader(settings: Settings | None = None) -> AttachmentD
 
     from app.ingestion.attachment_downloader import HttpAttachmentDownloader
 
-    # 자격증명 모델(api-spec v2.6.1, 2026-06-11 정정): admin-key 경로는 admin API Token 의
+    # 자격증명 모델(v2.6.1 정정 → v2.6.2 ML 측 단서로 보존): admin-key 경로는 admin API Token 의
     # Basic 인증 + Admin Key 헤더(다운로드 URL 도 site 도메인), OAuth 경로는 Bearer.
     if resolved.atlassian_use_admin_key:
         from app.adapters.atlassian import build_admin_basic_authorization
@@ -225,6 +250,7 @@ def build_delta_runner(
     store = raw_store or build_raw_page_store(resolved)
     publisher = queue_publisher or FakeQueuePublisher()
     acl_provider = build_restriction_acl_provider(resolved)
+    _warn_if_site_url_missing(resolved)
 
     def _run_delta(request: DeltaSyncRequest) -> DeltaSyncResult:
         return run_delta_sync(
@@ -232,6 +258,7 @@ def build_delta_runner(
             raw_store=store,
             publisher=publisher,
             acl_provider=acl_provider,
+            site_url=resolved.atlassian_site_url,
         )
 
     return _run_delta
@@ -303,7 +330,7 @@ def build_request_source_adapter(
     교체한다 — 종전 ``run_full_crawl(adapter=None)`` 의 bare 생성자 경로는 Settings 의
     restriction ACL 구성이 빠져 운영 ACL 정책과 어긋났다.
 
-    admin-key 경로(``atlassian_use_admin_key=True``)는 v2.6.1 정정에 따라 요청 OAuth
+    admin-key 경로(``atlassian_use_admin_key=True``)는 v2.6.1 정정(v2.6.2 보존)에 따라 요청 OAuth
     토큰이 아니라 Settings 의 admin API Token(Basic + site URL) 클라이언트를 주입한다 —
     요청 토큰은 vendored config 필수 검증만 채우고 실제 호출에 쓰이지 않는다.
     """
@@ -314,6 +341,7 @@ def build_request_source_adapter(
     )
 
     client = _build_admin_confluence_client(settings) if settings.atlassian_use_admin_key else None
+    _warn_if_site_url_missing(settings)
     return AtlassianSourceAdapter(
         cloud_id=cloud_id,
         access_token=access_token,
@@ -323,6 +351,7 @@ def build_request_source_adapter(
         max_retries=settings.atlassian_max_retries,
         timeout_seconds=settings.atlassian_timeout_seconds,
         use_admin_key=settings.atlassian_use_admin_key,
+        site_url=settings.atlassian_site_url,
     )
 
 

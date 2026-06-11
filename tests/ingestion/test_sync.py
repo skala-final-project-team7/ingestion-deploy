@@ -250,3 +250,33 @@ def test_run_delta_sync_resets_provider_cache_at_run_start() -> None:
     )
 
     assert provider.reset_calls == 2
+
+
+def test_run_delta_sync_normalizes_webui_link_when_site_url_set() -> None:
+    """delta 경로도 §2-5 siteUrl 로 webui_link 를 absolute 정규화한다(full crawl 정합).
+
+    backend-template 동기화(2026-06-11): site_url 미주입이면 종전대로 passthrough.
+    """
+    store = FakeRawPageStore()
+    publisher = FakeQueuePublisher()
+    runner = _fake_runner(changed=[_changed("page-1")], deleted=[], failed=[])
+
+    run_delta_sync(
+        _request(),
+        raw_store=store,
+        publisher=publisher,
+        workflow_runner=runner,
+        site_url="https://lina.atlassian.net",
+    )
+
+    assert store.pages["page-1"].webui_link == "https://lina.atlassian.net/wiki/page-1"
+
+
+def test_run_delta_sync_keeps_relative_webui_link_without_site_url() -> None:
+    store = FakeRawPageStore()
+    publisher = FakeQueuePublisher()
+    runner = _fake_runner(changed=[_changed("page-1")], deleted=[], failed=[])
+
+    run_delta_sync(_request(), raw_store=store, publisher=publisher, workflow_runner=runner)
+
+    assert store.pages["page-1"].webui_link == "/wiki/page-1"

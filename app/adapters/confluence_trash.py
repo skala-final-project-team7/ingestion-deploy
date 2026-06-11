@@ -174,7 +174,7 @@ class ConfluenceTrashContentClient:
     ``_TrashHttpTransport`` 로 주입해(기본 urllib) 단위테스트에서 fake 로 대체 가능하다.
     credential 은 로그·예외에 남기지 않는다.
 
-    자격증명 모델(api-spec v2.6.1, 2026-06-11 정정): ``use_admin_key=True`` 면
+    자격증명 모델(v2.6.1 정정 → v2.6.2 ML 측 단서로 보존): ``use_admin_key=True`` 면
     ``admin_authorization``(``Basic base64(adminEmail:adminApiToken)``) + Admin Key 헤더를
     **site URL**(``site_url``) 에서 사용한다 — OAuth Bearer/게이트웨이 경로에서는 admin-key
     가 동작하지 않는다(위반 시 trashed 페이지 무음 누락). False 면 종전 Bearer 게이트웨이.

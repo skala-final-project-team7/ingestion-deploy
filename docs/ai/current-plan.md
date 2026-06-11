@@ -41,9 +41,11 @@
   adapters / storage / attachment_analyzer / sync (2026-05-26, import 경로 그대로 미러링)
 - [ ] **`pip install -e ".[ingestion,embedding,dev]"`** 후 import·테스트 통과 확인 (Mac/3.11)
 - [ ] **RabbitMQ / MongoDB / Qdrant 로컬 기동**(docker compose) — Worker 통합 테스트 전 필요
-- [ ] **Confluence credential 전달 경로 (api-spec v2.5.0)** — preferred: BFF/RabbitMQ payload 에
-  credential 미포함, Worker 가 `adminUserId` 로 auth-server 내부 credential API 조회. `accessToken`/
-  `cloudId` 직접 전달은 legacy PoC 호환만 (요구사항정의서 §2-2)
+- [ ] **Confluence credential 전달 경로 (api-spec v2.6.2 §2-5)** — preferred: BFF/RabbitMQ payload 에
+  credential 미포함, Worker 가 `adminUserId` 로 auth-server 내부 credential API 조회 → 응답
+  `{accessToken, cloudId, siteUrl, expiresAt}` (siteUrl=출처 URL 정규화용 — 2026-06-11 추가,
+  `RAG_ATLASSIAN_SITE_URL` 로 주입 가능). `accessToken`/`cloudId` 직접 전달은 legacy PoC 호환만
+  (요구사항정의서 §2-2)
 - [x] **수집 완료 이벤트 seam (api-spec v2.5.0)** — terminal(COMPLETED/FAILED) 직후 credential 없는
   RabbitMQ completion event 발행(`app/api/ingest_completion.py`). 실 RabbitMQ publisher/consumer·
   `adminUserId` credential lookup wiring 은 후속(featureI-7c).
@@ -119,9 +121,10 @@
 - [x] ★ **ACL 모델 결정 — 완료 (api-spec v2.4/v2.5, ADR 0003 항목 1)**: page-level `allowed_groups`/
   `allowed_users` **채택**(Admin Key read restriction + 빈 권한 시 공개 sentinel `"*"`). `space:{key}`
   합성(`_synthesize_acl`)은 Admin-Key-OFF 폴백, rag `build_acl_filter` 가 검색 seam. **RAG 레포 공유 계약 — `docs/adr/0003-ingestion-rag-shared-contracts.md` 참조.**
-- [ ] **credential 전달 경로 (api-spec v2.5.0)** — preferred: Worker 가 `adminUserId` 로 auth-server
-  내부 credential API 조회(BFF/RabbitMQ payload 에 credential 미포함). `accessToken`/`cloudId` 직접
-  전달은 legacy PoC 호환만(요구사항 §2-2).
+- [ ] **credential 전달 경로 (api-spec v2.6.2 §2-5)** — preferred: Worker 가 `adminUserId` 로 auth-server
+  내부 credential API 조회(BFF/RabbitMQ payload 에 credential 미포함) → `{accessToken, cloudId,
+  siteUrl, expiresAt}`. `accessToken`/`cloudId` 직접 전달은 legacy PoC 호환만(요구사항 §2-2).
+  webui_link absolute 정규화는 siteUrl(=`RAG_ATLASSIAN_SITE_URL`)로 **반영 완료**(2026-06-11).
 - [ ] **RabbitMQ / MongoDB 로컬 기동**(docker compose) — 통합 테스트 전.
 
 #### 테스트 방법 (외부 의존성 mock/fake)

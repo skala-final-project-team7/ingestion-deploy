@@ -28,6 +28,11 @@
   - 2026-06-10, A2 후속 — atlassian_ancestor_restriction_lookup 토글 추가(기본 True).
     빈 restriction 페이지가 조상 제한을 상속해 정확한 ACL 로 색인된다(종전 mark_missing
     기본에선 색인 제외되던 페이지의 복구 — fail-closed 안전성은 유지).
+  - 2026-06-11, backend-template 동기화(site_url 단일화 — db-schema §6.4/api-spec §2-5) —
+    atlassian_site_url 주석을 확정 계약으로 갱신: BE 는 site_url 을
+    admin_atlassian_credential.site_url 한 곳에만 저장하고(§2-5 JSON `siteUrl` 로 전달,
+    public_site_url 별도 명칭 없음), 본 설정은 그 값의 env 주입 지점이다. 용도 ①
+    admin-key 호출 대상 site ② webui_link absolute 정규화 base(출처 링크).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, Pydantic 2.7+, pydantic-settings 2.3+
@@ -62,20 +67,34 @@ class Settings(BaseSettings):
     atlassian_request_delay_seconds: float = 0.3
     atlassian_max_retries: int = 3
     atlassian_timeout_seconds: int = 20
-    # True면 admin-key credential 경로를 사용한다(api-spec v2.6.1 — Feature 0 게이트 결론):
-    # Confluence 호출을 admin API Token 의 Basic 인증(base64(adminEmail:adminApiToken)) +
-    # Atl-Confluence-With-Admin-Key header 로 **site URL** 에서 수행하고, page-level read
-    # restriction(/rest/api/content/{id}/restriction/byOperation/read)을 조회해
-    # allowed_groups/allowed_users 를 산출한다. OAuth Bearer/게이트웨이 경로에서는 admin-key
-    # 가 동작하지 않는다(위반 시 restricted 페이지 무음 누락). False(기본)면 OAuth Bearer
-    # 사용자 토큰 경로(restriction 미조회 — ACL 없는 페이지는 fail-closed 로 색인 제외).
+    # True면 admin-key credential 경로를 사용한다(api-spec v2.6.1 도입 → v2.6.2 ML 측
+    # 단서로 보존): Confluence 호출을 admin API Token 의 Basic 인증
+    # (base64(adminEmail:adminApiToken)) + Atl-Confluence-With-Admin-Key header 로
+    # **site URL** 에서 수행하고, page-level read restriction
+    # (/rest/api/content/{id}/restriction/byOperation/read)을 조회해
+    # allowed_groups/allowed_users 를 산출한다. BE 확정 계약(v2.6.2 하이브리드)의 콘텐츠
+    # 조회는 OAuth Bearer+게이트웨이+Admin Key 헤더이나 **3단계 검증 게이트** — ML 실측
+    # (2026-06-02)에서는 동 조합으로 admin-key 우회가 재현되지 않아(위반 시 restricted
+    # 페이지 무음 누락) 본 토글의 Basic+site URL 경로를 게이트 통과 시까지 보존한다.
+    # False(기본)면 OAuth Bearer 사용자 토큰 경로(restriction 미조회 — ACL 없는 페이지는
+    # fail-closed 로 색인 제외).
     # Admin Key 활성화/만료는 backend/infra 운영 영역이며, 본 설정은 클라이언트 구성만 제어한다.
     atlassian_use_admin_key: bool = False
-    # --- admin-key credential (use_admin_key=True 시 필수 — api-spec v2.6.1 §1-4 ④⑤) ---
+    # --- admin-key credential (use_admin_key=True 시 필수 — v2.6.1 §1-4 ④⑤ 도입, v2.6.2 보존) ---
     # admin API Token 은 id.atlassian.com 에서 수동 발급한 정적 단일 credential 이다.
     # OAuth access token(로그인용)과 다른 물건이며 Basic 인증으로만 쓰인다. 저장/조회
     # 위치(DB vs env Secret)는 별도 결정 사항으로, 현 codebase 는 env Secret 주입을 쓴다.
-    atlassian_site_url: str = ""  # 예: https://{site}.atlassian.net (admin-key 호출 대상 site)
+    # --- site_url 단일화 (backend 2026-06-11 확정 — db-schema §6.4 V004 / api-spec §2-5) ---
+    # site_url 은 BE DB `admin_atlassian_credential.site_url` **한 곳**에만 저장되고
+    # (public_site_url 같은 별도 명칭 없음), §2-5 credential lookup 이 JSON `siteUrl` 로
+    # ingestion 에 전달하는 값과 동일하다(accessible-resources 응답 url —
+    # https://{site}.atlassian.net, secret 아님). 용도 2가지:
+    #   ① admin-key 호출 대상 site (use_admin_key=True 경로의 base URL)
+    #   ② 출처 링크 정규화 base — `_links.webui` 상대경로 → absolute
+    #      (normalize_webui_link → Qdrant webui_link / RAG sources[].url)
+    # 콘텐츠 조회 REST 게이트웨이(api.atlassian.com/ex/confluence/{cloudId})와 혼용 금지.
+    # atlassian 소스에서 미주입 시 출처 링크가 상대경로로 남는다(bootstrap WARNING).
+    atlassian_site_url: str = ""  # 예: https://{site}.atlassian.net (= §2-5 siteUrl)
     atlassian_admin_email: str = ""
     atlassian_admin_api_token: SecretStr = SecretStr("")
     # read restriction의 group 결과를 allowed_groups로 변환할 때 사용할 식별자 우선순위.
