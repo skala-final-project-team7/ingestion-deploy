@@ -43,6 +43,28 @@ class _FakeCompletionPublisher:
         self.events.append(event)
 
 
+class _FlakyJobStore(_FakeJobStore):
+    """지정 호출 순번에 대해 update 예외를 발생시키는 테스트 전용 스토어."""
+
+    def __init__(self, *, fail_on_update_calls: set[int]) -> None:
+        super().__init__()
+        self.fail_on_update_calls = fail_on_update_calls
+        self.update_calls = 0
+
+    def update(self, job_id: str, **changes: object) -> None:
+        self.update_calls += 1
+        if self.update_calls in self.fail_on_update_calls:
+            raise RuntimeError("job store update failed intentionally")
+        super().update(job_id, **changes)
+
+
+class _FailingDeltaSyncWorker(_FakeSyncWorker):
+    """delta 삭제 적용 단계 예외를 재현하는 테스트 전용 worker."""
+
+    def apply_delta_deletions(self, result: DeltaSyncResult, *, confirm: bool) -> SoftDeleteResult:
+        raise RuntimeError("delta delete failed intentionally")
+
+
 def test_ingest_completion_event_payload_has_required_fields_and_no_credentials() -> None:
     event = IngestCompletionEvent(job_id="job-1", mode="full", status=IngestJobStatus.COMPLETED, admin_user_id="admin-42")
     payload = event.to_payload()
@@ -130,6 +152,33 @@ def test_run_ingest_job_failure_publishes_failed_event() -> None:
     assert "accessToken" not in payload
 
 
+def test_run_ingest_job_failure_still_publishes_failed_event_if_job_update_fails() -> None:
+    store = _FlakyJobStore(fail_on_update_calls={2})
+    completion_publisher = _FakeCompletionPublisher()
+    deps = IngestDeps(
+        job_store=store,
+        run_crawl=lambda _req: (_ for _ in ()).throw(RuntimeError("crawl failed")),
+        sync_worker=_FakeSyncWorker(),
+        completion_publisher=completion_publisher,
+    )
+
+    run_ingest_job(
+        deps,
+        job_id="job-failed-store-update",
+        mode="full",
+        crawl_request=CrawlRequest(admin_user_id="admin-abc"),
+    )
+
+    assert len(store.updates) == 1
+    assert store.updates[0][1]["status"] == IngestJobStatus.IN_PROGRESS
+    [published] = completion_publisher.events
+    payload = published.to_payload()
+    assert payload["status"] == "FAILED"
+    assert payload["errorCode"] == "INGEST_FAILED"
+    assert payload["message"] == "crawl failed"
+    assert payload["adminUserId"] == "admin-abc"
+
+
 def test_run_delta_ingest_job_success_publishes_completed_and_invokes_delta_confirm() -> None:
     store = _FakeJobStore()
     completion_publisher = _FakeCompletionPublisher()
@@ -195,3 +244,30 @@ def test_run_delta_ingest_job_failure_publishes_failed_event() -> None:
     assert payload["status"] == "FAILED"
     assert payload["eventType"] == "INGEST_FAILED"
     assert payload["errorCode"] == "INGEST_FAILED"
+
+
+def test_run_delta_ingest_job_failure_still_publishes_failed_event_if_delta_delete_fails() -> None:
+    store = _FakeJobStore()
+    completion_publisher = _FakeCompletionPublisher()
+    deps = IngestDeps(
+        job_store=store,
+        run_crawl=lambda _req: CrawlResult(space_key="CLOUD"),
+        run_delta=lambda _req: DeltaSyncResult(changed_pages=5, failed_items=1),
+        sync_worker=_FailingDeltaSyncWorker(),
+        completion_publisher=completion_publisher,
+        delta_delete_confirm=True,
+    )
+
+    run_delta_ingest_job(
+        deps,
+        job_id="job-delta-delete-error",
+        delta_request=DeltaSyncRequest(previous_snapshot_path="", admin_user_id="admin-delta"),
+    )
+
+    assert len(completion_publisher.events) == 1
+    payload = completion_publisher.events[0].to_payload()
+    assert payload["status"] == "FAILED"
+    assert payload["eventType"] == "INGEST_FAILED"
+    assert payload["errorCode"] == "INGEST_FAILED"
+    assert payload["message"] == "delta delete failed intentionally"
+    assert payload["adminUserId"] == "admin-delta"

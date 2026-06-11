@@ -8,6 +8,10 @@
           트리거를 보장한다.
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-06-11, featureI-7c — success/failed publish 분기를 이 파일에 정규화.
+  - 2026-06-11, featureI-7c Step 4 — 실패 경로에서 completion 이벤트 강제 보장.
+    수집/Delta 실패 시 `FAILED` 발행을 상태 저장 실패와 분리해 `publish 실패`만 제외하고 보장하도록
+    `_publish_failed_completion` 경로를 추가. `run_delta_ingest_job`는 삭제 반영 예외도 이 경로로 수렴해
+    BFF deactivate 트리거가 중단되지 않도록 정합화.
 --------------------------------------------------
 """
 
@@ -35,7 +39,11 @@ def _resolve_runtime_credentials(
     cloud_id: str | None,
     credential_lookup: CredentialLookup | None,
 ) -> tuple[str | None, str | None]:
-    """adminUserId 기반 credential 조회를 우선 시도하되, 조회 실패 시 request 값으로 fallback 한다.
+    """adminUserId 기반 credential 조회를 우선 시도한다.
+
+    credential lookup 실패/미설정 시에도 수집 플로우가 멈추지 않도록 request 필드를
+    fallback 사용한다. 즉, 이 단계에서는 수집 요청 경로(`run_ingest`/`run_delta`)가
+    전달한 token 정보를 우선 보존한다.
 
     현재 단계에서는 auth-server 미구현 구간이 존재하므로, 조회 실패 시 예외를 전파하지 않고
     기존 credential(또는 None)을 그대로 사용한다.
@@ -63,7 +71,11 @@ def publish_ingest_completion(
     error_code: str | None = None,
     error: str | None = None,
 ) -> None:
-    """terminal 수집 완료 후 completion event 를 발행한다."""
+    """terminal 수집 종료 상태를 completion 이벤트로 publish한다.
+
+    별도 예외 처리 없이 publish seam 에 위임한다.
+    이벤트 payload 구성은 DTO에서 필드 허용/제한 정책(민감정보 제외)을 보장한다.
+    """
     publish_ingest_completion_safely(
         deps.completion_publisher,
         IngestCompletionEvent(
@@ -78,6 +90,44 @@ def publish_ingest_completion(
     )
 
 
+def _publish_failed_completion(
+    deps: IngestDeps,
+    *,
+    job_id: str,
+    mode: str,
+    admin_user_id: str | None,
+    error: Exception,
+) -> None:
+    """실패 잡 종료 경로에서 completion 이벤트를 보장 발행한다.
+
+    구현 포인트:
+    - `job_store.update`가 실패해도(디스크/네트워크/락 경합) 잡 상태 기록 실패로
+      completion publish 가 누락되지 않도록 먼저 고립 처리.
+    - publish 본체는 `publish_ingest_completion_safely`를 통해 재시도/예외 흡수를 수행한다.
+    """
+    finished_at = datetime.now(UTC)
+    try:
+        deps.job_store.update(
+            job_id,
+            status=IngestJobStatus.FAILED,
+            finished_at=finished_at,
+            error=str(error),
+        )
+    except Exception:  # noqa: BLE001 — 상태 영속화 실패는 이벤트 발행 자체를 막지 않음
+        _LOGGER.exception("failed job state persistence failed: job_id=%s", job_id)
+
+    publish_ingest_completion(
+        deps,
+        job_id=job_id,
+        mode=mode,
+        status=IngestJobStatus.FAILED,
+        admin_user_id=admin_user_id,
+        error_code="INGEST_FAILED",
+        error=str(error),
+        finished_at=finished_at,
+    )
+
+
 def run_ingest_job(
     deps: IngestDeps,
     job_id: str,
@@ -86,7 +136,11 @@ def run_ingest_job(
     *,
     credential_lookup: CredentialLookup | None = None,
 ) -> None:
-    """수집 잡을 실행하고 terminal 상태(COMPLETED/FAILED)로 정리한다."""
+    """수집 잡을 실행하고 terminal 상태(COMPLETED/FAILED)로 정리한다.
+
+    실패 시 `_publish_failed_completion`를 호출해 BFF deactivate 트리거용 FAILED 이벤트를
+    먼저 보장한다.
+    """
     deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
 
     access_token, cloud_id = _resolve_runtime_credentials(
@@ -106,23 +160,13 @@ def run_ingest_job(
     try:
         result = deps.run_crawl(request)
     except Exception as exc:  # noqa: BLE001 — 잡 단위 예외 격리
-        finished_at = datetime.now(UTC)
         _LOGGER.exception("ingest job failed: job_id=%s", job_id)
-        deps.job_store.update(
-            job_id,
-            status=IngestJobStatus.FAILED,
-            finished_at=finished_at,
-            error=str(exc),
-        )
-        publish_ingest_completion(
+        _publish_failed_completion(
             deps,
             job_id=job_id,
             mode=mode,
-            status=IngestJobStatus.FAILED,
             admin_user_id=crawl_request.admin_user_id,
-            error_code="INGEST_FAILED",
-            error=str(exc),
-            finished_at=finished_at,
+            error=exc,
         )
         return
 
@@ -153,7 +197,12 @@ def run_delta_ingest_job(
     *,
     credential_lookup: CredentialLookup | None = None,
 ) -> None:
-    """Delta Sync 잡을 실행하고 terminal 상태(COMPLETED/FAILED)로 정리한다."""
+    """Delta Sync 잡을 실행하고 terminal 상태(COMPLETED/FAILED)로 정리한다.
+
+    실패 시 `_publish_failed_completion`로 빠르게 FAILED 이벤트로 수렴하고,
+    delta 삭제 반영 단계(`apply_delta_deletions`) 예외도 동일 경로로 연결해
+    수집 실패라도 deactivate 경로가 누락되지 않게 한다.
+    """
     deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
 
     access_token, cloud_id = _resolve_runtime_credentials(
@@ -173,30 +222,32 @@ def run_delta_ingest_job(
     try:
         result = deps.run_delta(request)
     except Exception as exc:  # noqa: BLE001 — 잡 단위 예외 격리
-        finished_at = datetime.now(UTC)
         _LOGGER.exception("delta ingest job failed: job_id=%s", job_id)
-        deps.job_store.update(
-            job_id,
-            status=IngestJobStatus.FAILED,
-            finished_at=finished_at,
-            error=str(exc),
-        )
-        publish_ingest_completion(
+        _publish_failed_completion(
             deps,
             job_id=job_id,
             mode="delta",
-            status=IngestJobStatus.FAILED,
             admin_user_id=delta_request.admin_user_id,
-            error_code="INGEST_FAILED",
-            error=str(exc),
-            finished_at=finished_at,
+            error=exc,
         )
         return
 
     finished_at = datetime.now(UTC)
-    delete_result = deps.sync_worker.apply_delta_deletions(
-        result, confirm=deps.delta_delete_confirm
-    )
+    try:
+        delete_result = deps.sync_worker.apply_delta_deletions(
+            result, confirm=deps.delta_delete_confirm
+        )
+    except Exception as exc:  # noqa: BLE001 — 삭제 게이트 실패도 terminal failed 로 전환
+        _LOGGER.exception("delta delete apply failed: job_id=%s", job_id)
+        _publish_failed_completion(
+            deps,
+            job_id=job_id,
+            mode="delta",
+            admin_user_id=delta_request.admin_user_id,
+            error=exc,
+        )
+        return
+
     if delete_result.has_failures:
         _LOGGER.warning(
             "delta soft-delete partial failure: job_id=%s deleted=%d failed_pages=%d",
@@ -227,4 +278,3 @@ def run_delta_ingest_job(
         admin_user_id=delta_request.admin_user_id,
         finished_at=finished_at,
     )
-
