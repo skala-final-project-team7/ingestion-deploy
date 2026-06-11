@@ -126,11 +126,11 @@ class _RecordingTransport:
 
 
 def test_trash_content_client_builds_initial_url_and_auth_headers() -> None:
+    # OAuth(비 admin-key) 경로 — Bearer + 게이트웨이 URL (종전 동작 보존).
     transport = _RecordingTransport()
     client = ConfluenceTrashContentClient(
         cloud_id="CID",
         access_token="secret-token",
-        use_admin_key=True,
         page_limit=50,
         transport=transport,
     )
@@ -144,6 +144,27 @@ def test_trash_content_client_builds_initial_url_and_auth_headers() -> None:
     assert "spaceKey=CLOUD" in transport.url
     assert "limit=50" in transport.url
     assert transport.headers["Authorization"] == "Bearer secret-token"
+    assert "Atl-Confluence-With-Admin-Key" not in transport.headers
+
+
+def test_trash_content_client_admin_mode_uses_basic_and_site_url() -> None:
+    # admin-key 경로(api-spec v2.6.1, 2026-06-11 정정) — Basic + site URL. 종전
+    # Bearer+게이트웨이+Admin-Key 조합은 admin-key 가 동작하지 않아 폐기됐다.
+    transport = _RecordingTransport()
+    client = ConfluenceTrashContentClient(
+        cloud_id="CID",
+        access_token="",
+        use_admin_key=True,
+        page_limit=50,
+        transport=transport,
+        site_url="https://lina.atlassian.net",
+        admin_authorization="Basic c2VjcmV0",
+    )
+
+    client.fetch_trashed(space_key="CLOUD", cursor=None)
+
+    assert transport.url.startswith("https://lina.atlassian.net/wiki/rest/api/content?")
+    assert transport.headers["Authorization"] == "Basic c2VjcmV0"
     assert transport.headers["Atl-Confluence-With-Admin-Key"] == "true"
 
 

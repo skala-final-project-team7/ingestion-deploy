@@ -1,14 +1,21 @@
 # 0002. PoC ACL 그룹 prefix 컨벤션 — `space:{key}`
 
-- 상태: 채택
+- 상태: **superseded (2026-06-11)**
 - 날짜: 2026-05-17
 - 작성자: 최태성
 
-> **갱신 노트 (api-spec v2.4/v2.5, 2026-06-09)**: 운영 ACL 모델은 page-level read restriction
-> 기반 `allowed_groups`/`allowed_users` 적재 + 빈 권한 시 `allow_authenticated` 공개 sentinel
-> `"*"`(`RAG_ATLASSIAN_PUBLIC_ACL_GROUP`)로 진화했다(`docs/api-spec.md` §1-4/§2-2). 본 ADR의
-> `space:{key}` prefix 합성은 **PoC fixture/Admin Key 미사용(`RAG_ATLASSIAN_USE_ADMIN_KEY=false`)
-> 시 fallback**으로 유지되며, 합성 그룹에 대한 prefix 규약 자체는 그대로 유효하다.
+> **⛔ superseded (2026-06-11 회의 결정)**: ACL 값(`allowed_groups`)에 space key 를 싣는
+> 모델은 **완전 제거**됐다 — "`allowed_groups` 필드에 포함되어 있던 스페이스 키는 현재
+> 버전에서 사용하는 필드가 아니므로 코드에 남아있을 경우 제거" 합의 이행.
+> `synthesize_space_acl`(atlassian 어댑터)·`space_fallback` 정책은 삭제됐고,
+> JSON 픽스처 PoC 합성은 공개 sentinel `"*"` 부여로 대체됐다. 현행 모델:
+> page-level read restriction 기반 `allowed_groups`(**groupId**)/`allowed_users`(accountId)
+> + 빈 권한 정책(`mark_missing` 기본 / `allow_authenticated` opt-in) — `docs/api-spec.md`
+> v2.6.x §2-1·§1-4, `docs/db-schema.md` §1.4, ADR 0003 참조. 아래 본문은 역사 기록이다.
+>
+> (구) 갱신 노트 (api-spec v2.4/v2.5, 2026-06-09): 운영 ACL 모델은 page-level read restriction
+> 기반으로 진화했고 본 ADR 의 합성은 Admin-Key-OFF fallback 으로 유지된다 — **이 fallback 도
+> 위 결정으로 제거됨.**
 
 ## 배경
 

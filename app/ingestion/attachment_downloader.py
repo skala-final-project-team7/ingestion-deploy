@@ -84,7 +84,7 @@ class NoopAttachmentDownloader:
 class HttpAttachmentDownloader:
     """download_url 바이너리를 httpx 로 받아 download_dir 에 저장하고 local_path 를 채운다.
 
-    인증 헤더(Bearer + ``Atl-Confluence-With-Admin-Key`` 등)는 주입된 ``client`` 에 구성한다 —
+    인증 헤더(모드별 — admin-key: Basic+Admin-Key / OAuth: Bearer)는 주입된 ``client`` 에 구성한다 —
     본 다운로더는 자격증명을 보관하지 않는다. 이미 로컬(``local_path``)이면 네트워크 호출
     없이 그대로 사용한다.
 

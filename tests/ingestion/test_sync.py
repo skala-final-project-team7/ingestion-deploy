@@ -97,7 +97,10 @@ def test_run_delta_sync_reingests_changed_pages_and_collects_deletes() -> None:
     assert page.space_key == "ENG"
     assert page.body_html == "<p>page-1</p>"
     assert page.version_number == 4
-    assert page.allowed_groups == ["space:ENG"]
+    # provider 미주입 delta 는 빈 ACL(fail-closed) — 종전 space:ENG 합성은 2026-06-11
+    # 회의 결정으로 제거(ACL 값의 space key 레거시 폐기). 색인 단계 INVALID_ACL 게이트
+    # 가 제외하므로 운영 delta 는 admin-key provider 를 주입해야 한다.
+    assert page.allowed_groups == []
 
     assert [m.routing_key for m in publisher.messages] == [QUEUE_CHUNKING]
     assert publisher.messages[0].body == {
@@ -178,7 +181,7 @@ def test_run_delta_sync_uses_injected_acl_provider_over_space_synthesis() -> Non
     assert result.changed_pages == 1
     assert provider.calls == [("page-1", "ENG")]
     page = store.pages["page-1"]
-    # space 합성(["space:ENG"])이 아니라 provider ACL 이 그대로 적재된다.
+    # 빈 ACL 폴백이 아니라 provider ACL 이 그대로 적재된다.
     assert page.allowed_groups == ["frontend-team"]
     assert page.allowed_users == ["712020:user-1"]
 

@@ -1,10 +1,11 @@
 """AtlassianSourceAdapter 단위 테스트 — vendored Data Ingestion Agent 통합 경계 검증.
 
 vendored ``run_full_crawl_workflow`` 를 fake Confluence client 와 함께 실제로 구동해
-ProcessedDocument→PageObject 매핑·PoC ACL 합성·since 필터·list_active_ids 를 검증한다.
-Admin Key 경로(read restriction → allowed_groups/allowed_users)와 빈 restriction 정책
-(allow_authenticated / space_fallback / mark_missing — 기본은 fail-closed mark_missing,
-코드 리뷰 A2)도 fake client 로 검증한다. ``build_restriction_acl_provider``(full crawl/
+ProcessedDocument→PageObject 매핑·provider 부재 시 빈 ACL(fail-closed)·since 필터·
+list_active_ids 를 검증한다. Admin Key 경로(read restriction → allowed_groups/allowed_users)
+와 빈 restriction 정책(allow_authenticated / mark_missing — 기본은 fail-closed mark_missing,
+코드 리뷰 A2; space_fallback 은 2026-06-11 제거되어 거부를 검증)도 fake client 로 검증한다.
+``build_restriction_acl_provider``(full crawl/
 delta 공용 seam — 코드 리뷰 A3)의 Settings 기반 분기도 검증한다.
 외부 HTTP 는 fake client 로 대체한다(루트 CLAUDE.md 테스트 규칙).
 """
@@ -118,13 +119,15 @@ def test_fetch_pages_maps_processed_document_to_page_object() -> None:
     assert page.last_modified == parse_atlassian_datetime("2026-05-14T01:00:00Z")
 
 
-def test_fetch_pages_synthesizes_space_acl_and_empty_mvp_fields() -> None:
+def test_fetch_pages_without_provider_yields_empty_acl_and_empty_mvp_fields() -> None:
     page = next(iter(_adapter().fetch_pages()))
 
-    # admin key off(=ACL provider 미주입): PoC space_key 합성으로 폴백한다.
-    assert page.allowed_groups == ["space:ENG"]
+    # admin key off(=ACL provider 미주입): 빈 ACL(fail-closed) — 색인 단계 INVALID_ACL
+    # 게이트가 제외한다. 종전 PoC space_key 합성은 2026-06-11 회의 결정으로 제거됐다
+    # (ACL 값의 space key 레거시 폐기 — ADR 0002 superseded).
+    assert page.allowed_groups == []
     assert page.allowed_users == []
-    assert page.is_acl_missing is False
+    assert page.is_acl_missing is True
     # 에이전트 MVP 미산출 필드는 빈 값으로 매핑된다.
     assert page.labels == []
     assert page.ancestors == []
@@ -243,20 +246,20 @@ def test_parse_group_identifier_fields_rejects_empty_values() -> None:
 
 def test_parse_empty_restriction_policy_accepts_known_values() -> None:
     assert parse_empty_restriction_policy(" mark_missing ") == "mark_missing"
-    assert parse_empty_restriction_policy("space_fallback") == "space_fallback"
     assert parse_empty_restriction_policy(" allow_authenticated ") == "allow_authenticated"
 
 
 def test_parse_empty_restriction_policy_rejects_unknown_values() -> None:
-    try:
-        parse_empty_restriction_policy("public")
-    except ValueError as exc:
-        assert "atlassian_empty_restriction_policy" in str(exc)
-        assert "mark_missing" in str(exc)
-        assert "space_fallback" in str(exc)
-        assert "allow_authenticated" in str(exc)
-    else:
-        raise AssertionError("unknown empty restriction policy must be rejected")
+    # space_fallback 도 2026-06-11 제거 후 미지원 값이다(ACL 의 space key 레거시 폐기).
+    for invalid in ("public", "space_fallback"):
+        try:
+            parse_empty_restriction_policy(invalid)
+        except ValueError as exc:
+            assert "atlassian_empty_restriction_policy" in str(exc)
+            assert "mark_missing" in str(exc)
+            assert "allow_authenticated" in str(exc)
+        else:
+            raise AssertionError("unknown empty restriction policy must be rejected")
 
 
 def test_synthesize_authenticated_acl_returns_sentinel_group() -> None:
@@ -288,18 +291,18 @@ def test_confluence_restriction_acl_provider_marks_empty_restriction_missing() -
     assert client.requested_page_ids == ["page-001"]
 
 
-def test_confluence_restriction_acl_provider_can_fallback_to_space_acl() -> None:
+def test_confluence_restriction_acl_provider_rejects_removed_space_fallback() -> None:
+    # 2026-06-11 — space_fallback 정책은 제거됐다(ACL 값의 space key 레거시 폐기).
+    # provider 생성 시점에 명확히 거부되어야 한다(무음 동작 변경 방지).
     client = _FakeRestrictionClient(
         {"operation": "read", "restrictions": {"group": {"results": []}, "user": {"results": []}}}
     )
-    provider = ConfluenceRestrictionAclProvider(
-        client=client, empty_restriction_policy="space_fallback"
-    )
-
-    groups, users = provider.get_page_acl(page_id="page-001", space_key="ENG")
-
-    assert groups == ["space:ENG"]
-    assert users == []
+    try:
+        ConfluenceRestrictionAclProvider(client=client, empty_restriction_policy="space_fallback")
+    except ValueError as exc:
+        assert "space_fallback" in str(exc) or "atlassian_empty_restriction_policy" in str(exc)
+    else:
+        raise AssertionError("removed policy space_fallback must be rejected")
 
 
 def test_confluence_restriction_acl_provider_allows_authenticated_on_empty() -> None:
@@ -409,11 +412,16 @@ def test_build_restriction_acl_provider_none_when_admin_key_disabled() -> None:
 
 
 def test_build_restriction_acl_provider_builds_provider_with_settings_policy() -> None:
-    """admin key on → Settings 의 정책/그룹 매핑 옵션이 반영된 provider 를 만든다."""
+    """admin key on → Settings 의 정책/그룹 매핑 옵션이 반영된 provider 를 만든다.
+
+    2026-06-11 — admin-key 경로는 admin API Token(Basic)+site URL 이 필수다(v2.6.1).
+    """
     settings = Settings(
         atlassian_use_admin_key=True,
         atlassian_cloud_id="cloud-synthetic",
-        atlassian_access_token=SecretStr("token-synthetic"),
+        atlassian_site_url="https://lina.atlassian.net",
+        atlassian_admin_email="admin@lina.example",
+        atlassian_admin_api_token=SecretStr("api-token-synthetic"),
         atlassian_group_acl_field_order="name,id",
         atlassian_group_acl_prefix="confluence-group:",
         atlassian_public_acl_group="*",
@@ -434,7 +442,9 @@ def test_build_restriction_acl_provider_honors_opt_in_policy() -> None:
     settings = Settings(
         atlassian_use_admin_key=True,
         atlassian_cloud_id="cloud-synthetic",
-        atlassian_access_token=SecretStr("token-synthetic"),
+        atlassian_site_url="https://lina.atlassian.net",
+        atlassian_admin_email="admin@lina.example",
+        atlassian_admin_api_token=SecretStr("api-token-synthetic"),
         atlassian_empty_restriction_policy="allow_authenticated",
     )
 

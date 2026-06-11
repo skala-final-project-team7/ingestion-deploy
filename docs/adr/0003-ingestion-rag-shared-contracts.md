@@ -12,6 +12,13 @@
 > §1-4/§2-2). `space_key` 는 payload 식별/표시 필드로 유지되고, `space:{key}` ACL 합성은 PoC
 > fixture/Admin Key 미사용 시 fallback 이다. Admin Key 말소는 v2.5에서 RabbitMQ completion
 > event(ML 발행 → BFF consumer → auth-server deactivate)로 확정.
+>
+> **갱신 노트 2 (2026-06-11 회의 결정)**: 항목 1 의 `space:{key}` ACL 합성(및 Admin-Key-OFF
+> fallback)은 **완전 제거**됐다 — ACL 값(`allowed_groups`)에 space key 를 싣지 않는다(ADR 0002
+> superseded). `synthesize_space_acl`·`space_fallback` 정책 삭제, provider 부재 시 빈 ACL
+> (fail-closed — 색인 단계 `INVALID_ACL` 제외), JSON 픽스처 PoC 는 공개 sentinel `"*"` 부여.
+> `allowed_groups` 값은 Confluence **groupId**(v2.6.0 §2-1), `space_key` payload 필드
+> (식별/표시·메타 필터)는 ACL 과 무관하게 유지된다. 아래 항목 1 본문은 역사 기록이다.
 
 ## 배경
 

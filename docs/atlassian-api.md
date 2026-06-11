@@ -83,8 +83,9 @@ API URL 형식: `https://api.atlassian.com/ex/confluence/{cloudid}/rest/api/...`
 (`ConfluenceRestrictionAclProvider`, `RAG_ATLASSIAN_USE_ADMIN_KEY=true`), restriction 이 빈 페이지는
 `allow_authenticated` 정책의 공개 sentinel `"*"`(`RAG_ATLASSIAN_PUBLIC_ACL_GROUP`)로 적재한다. 검색 시
 `app/query/acl.py:build_acl_filter`가 `userId`/`groups`에 OR 매칭하며 `"*"`를 항상 주입한다.
-**PoC fixture / Admin Key 미사용(`RAG_ATLASSIAN_USE_ADMIN_KEY=false`) 경로에서만** `allowed_groups`를
-`["space:{space_key}"]`로 합성하는 fallback(`synthesize_space_acl`/`_synthesize_acl`, ADR 0002)을 쓴다.
+**space key 합성 fallback 은 2026-06-11 회의 결정으로 제거됐다**(ACL 값의 space key 레거시 폐기 —
+ADR 0002 superseded): Admin Key 미사용(`RAG_ATLASSIAN_USE_ADMIN_KEY=false`) 경로는 빈 ACL
+(fail-closed — 색인 단계 `INVALID_ACL` 제외)이며, PoC fixture 는 공개 sentinel `"*"` 를 부여한다.
 `docs/db-schema.md` §1.4·`docs/ai/current-plan.md` 참조.
 
 ## Cloud ↔ Server/DC 전환

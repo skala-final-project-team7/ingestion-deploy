@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Protocol
 
-from app.adapters.atlassian import PageAclProvider, synthesize_space_acl
+from app.adapters.atlassian import PageAclProvider
 from app.adapters.base import DocumentSourceAdapter
 from app.adapters.json_fixture import parse_atlassian_datetime
 from app.ingestion.crawler import build_chunking_message
@@ -301,9 +301,11 @@ def _changed_document_to_page_object(
 
     Full Crawl 어댑터와 동일 매핑을 사용한다(공급원 무관 표준 계약). ACL 산출도
     full crawl 과 경로를 통일한다(코드 리뷰 A3) — ``acl_provider`` 가 주입되면
-    page-level restriction 기반 ACL(``get_page_acl``)을, 없으면 PoC space_key 합성을
-    사용한다. raw_pages ``save_page`` 가 ``$set`` 전체 교체라, 여기서 space 합성으로
-    고정하면 delta 1회로 제한 페이지 ACL 이 덮여 over/under-grant 가 발생한다.
+    page-level restriction 기반 ACL(``get_page_acl``)을, 없으면 **빈 ACL(fail-closed)**
+    을 사용한다(2026-06-11 — 종전 PoC space_key 합성은 회의 결정으로 제거. ACL 값에
+    space key 를 싣는 레거시 폐기, ADR 0002 superseded). raw_pages ``save_page`` 가
+    ``$set`` 전체 교체라, 여기서 합성으로 고정하면 delta 1회로 제한 페이지 ACL 이 덮여
+    over/under-grant 가 발생한다 — 빈 ACL 은 색인 단계 INVALID_ACL 게이트가 제외한다.
     """
     space = changed.space
     page = changed.page
@@ -315,7 +317,7 @@ def _changed_document_to_page_object(
             page_id=page_id, space_key=space_key
         )
     else:
-        allowed_groups, allowed_users = synthesize_space_acl(space_key)
+        allowed_groups, allowed_users = [], []
     return PageObject(
         page_id=page_id,
         space_key=space_key,

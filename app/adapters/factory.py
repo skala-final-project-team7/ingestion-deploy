@@ -46,14 +46,29 @@ def build_source_adapter(settings: Settings | None = None) -> DocumentSourceAdap
     if source_type == "json_fixture":
         return JsonFixtureSourceAdapter(samples_dir=resolved.samples_dir)
     if source_type == "atlassian":
-        # vendored Data Ingestion Agent 를 감싸는 어댑터(featureI-6). access_token/cloud_id
-        # 전달 경로는 미확정(TBD)이라 PoC 는 Settings placeholder(env 주입)를 사용한다.
-        token = resolved.atlassian_access_token.get_secret_value()
-        if not resolved.atlassian_cloud_id or not token:
-            raise MissingAtlassianCredentialsError(
-                "source_type='atlassian'에는 RAG_ATLASSIAN_CLOUD_ID / "
-                "RAG_ATLASSIAN_ACCESS_TOKEN 주입이 필요하다(전달 경로 확정 전 PoC placeholder)"
-            )
+        # vendored Data Ingestion Agent 를 감싸는 어댑터(featureI-6).
+        # 자격증명 모델(api-spec v2.6.1, 2026-06-11 정정):
+        #   - admin-key 경로(use_admin_key=True): admin API Token Basic + site URL —
+        #     site_url/admin_email/admin_api_token 필수(OAuth access_token 불필요).
+        #   - OAuth 경로(False): Bearer 사용자 토큰 — cloud_id/access_token 필수.
+        if resolved.atlassian_use_admin_key:
+            if not (
+                resolved.atlassian_site_url
+                and resolved.atlassian_admin_email
+                and resolved.atlassian_admin_api_token.get_secret_value()
+            ):
+                raise MissingAtlassianCredentialsError(
+                    "source_type='atlassian' + admin-key 경로에는 RAG_ATLASSIAN_SITE_URL / "
+                    "RAG_ATLASSIAN_ADMIN_EMAIL / RAG_ATLASSIAN_ADMIN_API_TOKEN 주입이 필요하다 "
+                    "(api-spec v2.6.1 §1-4 — admin-key 는 Basic 인증으로만 site URL 에서 동작)"
+                )
+        else:
+            token = resolved.atlassian_access_token.get_secret_value()
+            if not resolved.atlassian_cloud_id or not token:
+                raise MissingAtlassianCredentialsError(
+                    "source_type='atlassian'에는 RAG_ATLASSIAN_CLOUD_ID / "
+                    "RAG_ATLASSIAN_ACCESS_TOKEN 주입이 필요하다(전달 경로 확정 전 PoC placeholder)"
+                )
         from app.adapters.atlassian import AtlassianSourceAdapter
 
         return AtlassianSourceAdapter.from_settings(resolved)

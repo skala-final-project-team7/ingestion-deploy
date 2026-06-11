@@ -30,20 +30,32 @@
     ancestor_lookup_enabled 토글). 어댑터는 크롤 1회 수집으로 parent/title 맵을 만들어
     ancestor_ids(ACL)와 ancestors 제목 체인(section_path)을 함께 채운다. (2) SpaceInfo
     id/name → PageObject.space_id/space_name 매핑(sources[].spaceId/spaceName 원천).
+  - 2026-06-11, admin-ingest credential 모델 코드 정합 + space-key ACL 레거시 제거 —
+    (1) api-spec v2.6.1(Feature 0 게이트 결론) 반영: admin-key 경로(use_admin_key=True)는
+    admin API Token 의 Basic 인증(base64(adminEmail:adminApiToken)) + Admin Key 헤더를
+    **site URL** 에서 사용한다. vendored ConfluenceClient 는 무수정 보존하고, 본 어댑터가
+    _headers/_build_url 만 오버라이드한 서브클래스(_build_admin_confluence_client)를 조립해
+    crawl workflow 와 restriction provider 양쪽에 주입한다(rag 의 OpenAI transport 교체와
+    동일 seam 패턴). OAuth Bearer/게이트웨이 경로에서는 admin-key 가 동작하지 않아
+    restricted 페이지가 무음 누락되던 결함의 해소. (2) 회의 결정(2026-06-11)에 따라
+    ACL 값의 space key 레거시 완전 제거 — synthesize_space_acl·space_fallback 정책 삭제,
+    provider 부재 시 빈 ACL(fail-closed) 반환(ADR 0002 superseded).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x (vendored 에이전트가 enum.StrEnum 사용)
   - vendored ``data_ingestion_agent`` 패키지(저장소 루트) 필요
 --------------------------------------------------
 [ACL 수집 정책 (docs/db-schema.md §1.4 / docs/atlassian-api.md)]
-  - ``atlassian_use_admin_key=False`` (기본): page-level restriction API 미사용. PoC
-    ``synthesize_space_acl`` 로 ``["space:{space_key}"]`` 합성(기존 동작 보존).
-  - ``atlassian_use_admin_key=True``: Admin Key 로 ``/rest/api/content/{pageId}/
-    restriction/byOperation/read`` 를 조회해 ``allowed_groups``/``allowed_users`` 산출.
-    restriction 이 비어 있을 때의 처리는 ``atlassian_empty_restriction_policy`` 로 분기:
+  - ``atlassian_use_admin_key=False`` (기본): page-level restriction API 미사용 → 빈 ACL
+    (fail-closed — 색인 단계 ``INVALID_ACL`` 제외). 2026-06-11 회의 결정으로 종전 PoC
+    ``["space:{space_key}"]`` 합성은 **제거**(ACL 값에 space key 를 싣는 레거시 폐기 —
+    ADR 0002 superseded). 실 수집은 admin-key 경로(True)를 사용한다.
+  - ``atlassian_use_admin_key=True``: admin API Token 의 Basic 인증 + Admin Key 헤더로
+    **site URL** 에서 ``/rest/api/content/{pageId}/restriction/byOperation/read`` 를 조회해
+    ``allowed_groups``/``allowed_users`` 산출(api-spec v2.6.1 §1-4 ④⑤). restriction 이
+    비어 있을 때의 처리는 ``atlassian_empty_restriction_policy`` 로 분기:
       * ``allow_authenticated`` (opt-in — 기본은 ``mark_missing``): ``[public_acl_group]`` 부여
         → 모든 인증 사용자 허용(상속 제한 미반영 위험 — A2).
-      * ``space_fallback``: ``["space:{space_key}"]`` 합성(공간 단위 ACL).
       * ``mark_missing``: 빈 ACL → 색인 단계 ``INVALID_ACL`` 차단(보수 정책).
 --------------------------------------------------
 """
@@ -67,7 +79,8 @@ _LOGGER = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from app.config import Settings
 
-EMPTY_RESTRICTION_POLICIES = frozenset({"mark_missing", "space_fallback", "allow_authenticated"})
+# space_fallback 은 2026-06-11 제거 — ACL 값에 space key 를 싣는 레거시 폐기(ADR 0002 superseded).
+EMPTY_RESTRICTION_POLICIES = frozenset({"mark_missing", "allow_authenticated"})
 
 
 class _WorkflowRunner(Protocol):
@@ -97,9 +110,9 @@ class ConfluenceRestrictionAclProvider:
       - ``mark_missing`` (기본 — Settings 기본값과 동일): 빈 ACL 반환 → 색인 ACL gate 가
         차단(fail-closed). 위 실측 사례 때문에 ancestor restriction 조회가 구현되기
         전까지는 이것이 안전 기본값이다(코드 리뷰 A2).
-      - ``space_fallback``: ``synthesize_space_acl`` 로 공간 단위 ACL 합성.
       - ``allow_authenticated`` (opt-in 전용): ``[public_acl_group]`` 부여(모든 인증 사용자
         허용 sentinel). 상속 제한 문서를 과다 노출할 수 있으므로 명시 opt-in 으로만 사용.
+      - (``space_fallback`` 은 2026-06-11 제거 — ACL 값의 space key 레거시 폐기.)
     """
 
     client: Any
@@ -154,7 +167,8 @@ class ConfluenceRestrictionAclProvider:
 
         Args:
             page_id: 대상 페이지.
-            space_key: 폴백(``space_fallback``) 합성용.
+            space_key: provider seam(``PageAclProvider``) 시그니처 계약용 — 2026-06-11
+                space_fallback 제거 후 본 구현에서는 미사용.
             ancestor_ids: 가까운 조상 → 루트 순 조상 id. 호출자(full crawl 어댑터)가
                 크롤 payload 의 parent_id 체인으로 전달하면 API 추가 호출 없이 사용한다.
                 None 이면(delta 등) ``get_page_detail`` 의 parentId 를 따라 직접 걷는다.
@@ -173,8 +187,6 @@ class ConfluenceRestrictionAclProvider:
 
         if self.empty_restriction_policy == "allow_authenticated":
             return synthesize_authenticated_acl(self.public_acl_group)
-        if self.empty_restriction_policy == "space_fallback":
-            return synthesize_space_acl(space_key)
         return [], []
 
     def _restrictions_for(self, page_id: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -236,22 +248,18 @@ class ConfluenceRestrictionAclProvider:
 def build_restriction_acl_provider(settings: Settings) -> ConfluenceRestrictionAclProvider | None:
     """Settings 기반 page-level ACL provider 빌더 — full crawl/delta 공용 seam(코드 리뷰 A3).
 
-    ``atlassian_use_admin_key=False`` 면 None(PoC space_key 합성 폴백). True 면 Admin Key
-    클라이언트로 read restriction 을 조회하는 provider 를 만든다. ``from_settings``(full
-    crawl)와 ``bootstrap.build_delta_runner``(delta)가 같은 빌더를 사용해 두 경로의 ACL
-    산출을 통일한다.
+    ``atlassian_use_admin_key=False`` 면 None(restriction 미조회 — 빈 ACL fail-closed).
+    True 면 admin API Token 의 Basic 인증 + site URL 클라이언트
+    (``_build_admin_confluence_client`` — api-spec v2.6.1 §1-4 ⑤)로 read restriction 을
+    조회하는 provider 를 만든다. ``from_settings``(full crawl)와
+    ``bootstrap.build_delta_runner``(delta)가 같은 빌더를 사용해 두 경로의 ACL 산출을
+    통일한다. (2026-06-11 정정 — 종전 Bearer+게이트웨이 조합은 admin-key 가 동작하지
+    않아 restricted 페이지가 무음 누락됐다.)
     """
     if not settings.atlassian_use_admin_key:
         return None
     return ConfluenceRestrictionAclProvider(
-        client=_default_confluence_client(
-            cloud_id=settings.atlassian_cloud_id,
-            access_token=settings.atlassian_access_token.get_secret_value(),
-            request_delay_seconds=settings.atlassian_request_delay_seconds,
-            max_retries=settings.atlassian_max_retries,
-            timeout_seconds=settings.atlassian_timeout_seconds,
-            use_admin_key=settings.atlassian_use_admin_key,
-        ),
+        client=_build_admin_confluence_client(settings),
         group_identifier_fields=parse_group_identifier_fields(
             settings.atlassian_group_acl_field_order
         ),
@@ -311,20 +319,28 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
 
     @classmethod
     def from_settings(cls, settings: Settings) -> AtlassianSourceAdapter:
-        """Settings 의 placeholder 자격증명으로 어댑터를 생성한다(팩토리 경로).
+        """Settings 자격증명으로 어댑터를 생성한다(팩토리 경로).
 
-        access_token/cloud_id 전달 경로가 확정되기 전 PoC placeholder 다. 자격증명이
-        비어 있으면 실행 시 vendored 에이전트의 config 검증에서 실패한다.
+        ``atlassian_use_admin_key=True`` (운영 admin-key 경로 — api-spec v2.6.1):
+        admin API Token 의 Basic 인증 + site URL 클라이언트(``_build_admin_confluence_client``)
+        를 crawl workflow 에 주입하고, 동일 모델의 ``ConfluenceRestrictionAclProvider`` 로
+        page-level read restriction 을 조회한다. OAuth access_token 은 이 경로에서 쓰지
+        않는다(vendored config 필수 검증만 sentinel 로 충족 — 주입 클라이언트가 헤더를
+        소유하므로 실제 호출에 사용되지 않음).
 
-        ``atlassian_use_admin_key`` 가 켜져 있으면 Admin Key 로 page-level read restriction
-        을 조회하는 ``ConfluenceRestrictionAclProvider`` 를 주입한다(빈 restriction 처리는
-        ``atlassian_empty_restriction_policy`` 로 분기). 꺼져 있으면 provider 를 주입하지
-        않아 PoC space_key 합성으로 동작한다(기존 동작 보존).
+        ``atlassian_use_admin_key=False``: OAuth Bearer 사용자 토큰 경로(restriction
+        미조회 — ACL 없는 페이지는 fail-closed 로 색인 제외).
         """
         acl_provider = build_restriction_acl_provider(settings)
+        access_token = settings.atlassian_access_token.get_secret_value()
+        client = None
+        if settings.atlassian_use_admin_key:
+            client = _build_admin_confluence_client(settings)
+            access_token = access_token or _ADMIN_BASIC_AUTH_TOKEN_SENTINEL
         return cls(
             cloud_id=settings.atlassian_cloud_id,
-            access_token=settings.atlassian_access_token.get_secret_value(),
+            access_token=access_token,
+            client=client,
             acl_provider=acl_provider,
             request_delay_seconds=settings.atlassian_request_delay_seconds,
             max_retries=settings.atlassian_max_retries,
@@ -454,15 +470,6 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
             attachments=[],
         )
 
-    def _synthesize_acl(self, space_key: str) -> tuple[list[str], list[str]]:
-        """PoC ACL 합성 — space_key 기반 그룹(JsonFixtureSourceAdapter 패턴 동일).
-
-        ``atlassian_use_admin_key`` 가 꺼져 있어 ACL provider 가 없을 때의 폴백이다.
-        page-level restriction 이 비어 있는 경우 상위 folder/page/space permission 처리
-        정책은 ``ConfluenceRestrictionAclProvider`` 로 옮겼다(docs/db-schema.md §1.4, ADR 0003).
-        """
-        return synthesize_space_acl(space_key)
-
     def _resolve_acl(
         self,
         *,
@@ -471,7 +478,11 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         ancestor_ids: Sequence[str] | None = None,
     ) -> tuple[list[str], list[str]]:
         if self._acl_provider is None:
-            return self._synthesize_acl(space_key)
+            # 2026-06-11 — provider 부재(use_admin_key=False) 시 빈 ACL(fail-closed).
+            # 종전 ``["space:{space_key}"]`` 합성은 회의 결정으로 제거(ACL 값의 space key
+            # 레거시 폐기). 빈 ACL 페이지는 색인 단계 INVALID_ACL 게이트가 제외하므로,
+            # 실 수집은 admin-key 경로를 켜야 한다(기동 로그·문서로 안내).
+            return [], []
         # restriction 조회 하드 실패(재시도 소진 등)는 페이지 단위로 격리한다 — 1건이
         # full crawl 잡 전체를 FAILED 로 만들지 않도록 빈 ACL 로 fail-closed 강등하고
         # (빈 ACL 페이지는 chunking 의 INVALID_ACL 게이트가 색인에서 제외 — app/CLAUDE.md
@@ -599,16 +610,6 @@ def _dedupe_non_empty(values: list[str]) -> list[str]:
     return deduped
 
 
-def synthesize_space_acl(space_key: str) -> tuple[list[str], list[str]]:
-    """PoC ACL 합성(space_key 기반) — Full Crawl·Delta Sync 어댑터가 공유한다.
-
-    에이전트 MVP 가 ACL 을 산출하지 않으므로 ``["space:{space_key}"]`` 그룹으로 합성한다.
-    운영 ACL 연동 시 Admin Key + read restriction 조회 결과로 본 함수 호출부를 교체한다
-    (RAG 검색 ACL 필터와 공유 계약).
-    """
-    return [f"space:{space_key}"], []
-
-
 def synthesize_authenticated_acl(public_acl_group: str) -> tuple[list[str], list[str]]:
     """restriction 없는 페이지에 부여하는 "모든 인증 사용자 허용" sentinel ACL 을 합성한다.
 
@@ -646,28 +647,84 @@ def _default_workflow_runner() -> _WorkflowRunner:
     return runner
 
 
-def _default_confluence_client(
-    *,
-    cloud_id: str,
-    access_token: str,
-    request_delay_seconds: float,
-    max_retries: int,
-    timeout_seconds: int,
-    use_admin_key: bool,
-) -> Any:
+# vendored DataIngestionConfig 의 access_token 필수 검증을 충족하기 위한 sentinel —
+# admin-key(Basic) 경로에서는 주입 클라이언트가 Authorization 헤더를 소유하므로 이 값이
+# 실제 호출에 쓰이지 않는다. 만약 미오버라이드 경로가 이 값을 Bearer 로 쓰면 401 로
+# 즉시(무음 아님) 실패한다 — 의도된 loud-failure 가드.
+_ADMIN_BASIC_AUTH_TOKEN_SENTINEL = "unused-admin-basic-auth"  # noqa: S105 — secret 아님
+
+
+def build_admin_basic_authorization(admin_email: str, admin_api_token: str) -> str:
+    """`Authorization: Basic base64(adminEmail:adminApiToken)` 헤더 값을 만든다 (v2.6.1 ⑤)."""
+    import base64
+
+    raw = f"{admin_email}:{admin_api_token}".encode()
+    return f"Basic {base64.b64encode(raw).decode('ascii')}"
+
+
+def _build_admin_confluence_client(settings: Settings) -> Any:
+    """admin-key credential 경로용 ConfluenceClient — Basic 인증 + site URL (api-spec v2.6.1).
+
+    Feature 0 게이트 결론: admin-key 는 OAuth Bearer/게이트웨이 경로에서 동작하지 않는다.
+    vendored ``ConfluenceClient`` 는 Bearer + ``api.atlassian.com`` 게이트웨이가 하드코딩돼
+    있으므로, **vendoring 무수정 보존** 원칙에 따라 본 어댑터가 ``_headers``/``_build_url``
+    만 오버라이드한 서브클래스를 조립한다(rag 레포의 OpenAI transport 교체와 동일 seam).
+
+    Raises:
+        RuntimeError: ``atlassian_site_url`` / ``atlassian_admin_email`` /
+            ``atlassian_admin_api_token`` 누락 시 — restricted 페이지 무음 누락 대신
+            부트스트랩 시점에 명확히 실패한다.
+    """
     from data_ingestion_agent.config import DataIngestionConfig
     from data_ingestion_agent.confluence import ConfluenceClient
 
+    site_url = settings.atlassian_site_url.rstrip("/")
+    admin_email = settings.atlassian_admin_email
+    admin_api_token = settings.atlassian_admin_api_token.get_secret_value()
+    if not (site_url and admin_email and admin_api_token):
+        raise RuntimeError(
+            "admin-key 경로(RAG_ATLASSIAN_USE_ADMIN_KEY=true)에는 RAG_ATLASSIAN_SITE_URL / "
+            "RAG_ATLASSIAN_ADMIN_EMAIL / RAG_ATLASSIAN_ADMIN_API_TOKEN 이 필수다 — "
+            "admin-key 는 admin API Token 의 Basic 인증으로만 site URL 에서 동작한다 "
+            "(api-spec v2.6.1 §1-4 ④⑤)"
+        )
+    authorization = build_admin_basic_authorization(admin_email, admin_api_token)
+
+    class _AdminKeyBasicAuthConfluenceClient(ConfluenceClient):  # type: ignore[misc]
+        """Basic + Admin Key 헤더 / site URL 라우팅 오버라이드 (vendored 무수정 보존)."""
+
+        def __init__(self, *, config: Any) -> None:
+            super().__init__(config=config)
+            # 상대 경로("/spaces" 등 v2 API)의 기준을 게이트웨이 → site 로 교체.
+            self.base_url = f"{site_url}/wiki/api/v2"
+
+        def _headers(self) -> dict[str, str]:
+            return {
+                "Accept": "application/json",
+                "Authorization": authorization,
+                "Atl-Confluence-With-Admin-Key": "true",
+            }
+
+        def _build_url(self, path_or_url: str, query: dict[str, str | int] | None = None) -> str:
+            if path_or_url.startswith("https://"):
+                return path_or_url
+            path_with_query = self._build_path_with_query(path_or_url, query or {})
+            if path_with_query.startswith("/wiki/"):
+                return f"{site_url}{path_with_query}"
+            if path_with_query.startswith("/rest/api/"):
+                return f"{site_url}/wiki{path_with_query}"
+            return f"{self.base_url}{path_with_query}"
+
     config = DataIngestionConfig(
-        cloud_id=cloud_id,
-        access_token=access_token,
+        cloud_id=settings.atlassian_cloud_id or "admin-basic-site-url",
+        access_token=_ADMIN_BASIC_AUTH_TOKEN_SENTINEL,
         output_dir=tempfile.gettempdir(),
-        request_delay_seconds=request_delay_seconds,
-        max_retries=max_retries,
-        timeout_seconds=timeout_seconds,
-        use_admin_key=use_admin_key,
+        request_delay_seconds=settings.atlassian_request_delay_seconds,
+        max_retries=settings.atlassian_max_retries,
+        timeout_seconds=settings.atlassian_timeout_seconds,
+        use_admin_key=True,
     )
-    return ConfluenceClient(config=config)
+    return _AdminKeyBasicAuthConfluenceClient(config=config)
 
 
 def _parse_last_modified(value: str) -> datetime:

@@ -154,16 +154,31 @@ def build_attachment_downloader(settings: Settings | None = None) -> AttachmentD
 
     from app.ingestion.attachment_downloader import HttpAttachmentDownloader
 
-    headers = {"Authorization": f"Bearer {resolved.atlassian_access_token.get_secret_value()}"}
+    # 자격증명 모델(api-spec v2.6.1, 2026-06-11 정정): admin-key 경로는 admin API Token 의
+    # Basic 인증 + Admin Key 헤더(다운로드 URL 도 site 도메인), OAuth 경로는 Bearer.
     if resolved.atlassian_use_admin_key:
-        headers["Atl-Confluence-With-Admin-Key"] = "true"
-    # A11 — 자격증명이 실린 다운로드는 Atlassian API 호스트로만 허용하고, file:// URI 는
+        from app.adapters.atlassian import build_admin_basic_authorization
+
+        headers = {
+            "Authorization": build_admin_basic_authorization(
+                resolved.atlassian_admin_email,
+                resolved.atlassian_admin_api_token.get_secret_value(),
+            ),
+            "Atl-Confluence-With-Admin-Key": "true",
+        }
+    else:
+        headers = {"Authorization": f"Bearer {resolved.atlassian_access_token.get_secret_value()}"}
+    # A11 — 자격증명이 실린 다운로드는 Atlassian API/site 호스트로만 허용하고, file:// URI 는
     # 픽스처 디렉터리(samples_dir) 아래로만 제한한다(저장 데이터의 download_url 은 신뢰 경계 밖).
     api_host = urlparse(resolved.atlassian_api_base_url).hostname
+    site_host = (
+        urlparse(resolved.atlassian_site_url).hostname if resolved.atlassian_site_url else None
+    )
+    allowed_hosts = [host for host in (api_host, site_host) if host]
     return HttpAttachmentDownloader(
         download_dir=resolved.attachment_download_dir,
         client=httpx.Client(headers=headers),
-        allowed_hosts=[api_host] if api_host else None,
+        allowed_hosts=allowed_hosts or None,
         file_uri_allowed_prefix=resolved.samples_dir,
     )
 
@@ -287,12 +302,22 @@ def build_request_source_adapter(
     와 동일한 acl_provider/딜레이/재시도/Admin Key 구성을 쓰되 자격증명만 요청 값으로
     교체한다 — 종전 ``run_full_crawl(adapter=None)`` 의 bare 생성자 경로는 Settings 의
     restriction ACL 구성이 빠져 운영 ACL 정책과 어긋났다.
-    """
-    from app.adapters.atlassian import AtlassianSourceAdapter, build_restriction_acl_provider
 
+    admin-key 경로(``atlassian_use_admin_key=True``)는 v2.6.1 정정에 따라 요청 OAuth
+    토큰이 아니라 Settings 의 admin API Token(Basic + site URL) 클라이언트를 주입한다 —
+    요청 토큰은 vendored config 필수 검증만 채우고 실제 호출에 쓰이지 않는다.
+    """
+    from app.adapters.atlassian import (
+        AtlassianSourceAdapter,
+        _build_admin_confluence_client,
+        build_restriction_acl_provider,
+    )
+
+    client = _build_admin_confluence_client(settings) if settings.atlassian_use_admin_key else None
     return AtlassianSourceAdapter(
         cloud_id=cloud_id,
         access_token=access_token,
+        client=client,
         acl_provider=build_restriction_acl_provider(settings),
         request_delay_seconds=settings.atlassian_request_delay_seconds,
         max_retries=settings.atlassian_max_retries,

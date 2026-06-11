@@ -62,11 +62,22 @@ class Settings(BaseSettings):
     atlassian_request_delay_seconds: float = 0.3
     atlassian_max_retries: int = 3
     atlassian_timeout_seconds: int = 20
-    # True면 Confluence API 요청에 Atl-Confluence-With-Admin-Key header를 포함하고,
-    # page-level read restriction(/rest/api/content/{id}/restriction/byOperation/read)을
-    # 조회해 allowed_groups/allowed_users를 산출한다. False(기본)면 PoC space_key 합성.
-    # Admin Key 활성화/만료는 backend/infra 운영 영역이며, 본 설정은 header만 제어한다.
+    # True면 admin-key credential 경로를 사용한다(api-spec v2.6.1 — Feature 0 게이트 결론):
+    # Confluence 호출을 admin API Token 의 Basic 인증(base64(adminEmail:adminApiToken)) +
+    # Atl-Confluence-With-Admin-Key header 로 **site URL** 에서 수행하고, page-level read
+    # restriction(/rest/api/content/{id}/restriction/byOperation/read)을 조회해
+    # allowed_groups/allowed_users 를 산출한다. OAuth Bearer/게이트웨이 경로에서는 admin-key
+    # 가 동작하지 않는다(위반 시 restricted 페이지 무음 누락). False(기본)면 OAuth Bearer
+    # 사용자 토큰 경로(restriction 미조회 — ACL 없는 페이지는 fail-closed 로 색인 제외).
+    # Admin Key 활성화/만료는 backend/infra 운영 영역이며, 본 설정은 클라이언트 구성만 제어한다.
     atlassian_use_admin_key: bool = False
+    # --- admin-key credential (use_admin_key=True 시 필수 — api-spec v2.6.1 §1-4 ④⑤) ---
+    # admin API Token 은 id.atlassian.com 에서 수동 발급한 정적 단일 credential 이다.
+    # OAuth access token(로그인용)과 다른 물건이며 Basic 인증으로만 쓰인다. 저장/조회
+    # 위치(DB vs env Secret)는 별도 결정 사항으로, 현 codebase 는 env Secret 주입을 쓴다.
+    atlassian_site_url: str = ""  # 예: https://{site}.atlassian.net (admin-key 호출 대상 site)
+    atlassian_admin_email: str = ""
+    atlassian_admin_api_token: SecretStr = SecretStr("")
     # read restriction의 group 결과를 allowed_groups로 변환할 때 사용할 식별자 우선순위.
     # RAG JWT groups claim과 같은 문자열이어야 검색 ACL이 매칭된다(공유 계약).
     atlassian_group_acl_field_order: str = "id,groupId,name"
@@ -74,8 +85,9 @@ class Settings(BaseSettings):
     atlassian_group_acl_prefix: str = ""
     # page-level read restriction이 비어 있을 때의 처리 정책.
     # mark_missing(기본): 빈 ACL → INVALID_ACL(색인 제외, fail-closed).
-    # space_fallback: space:{space_key} ACL 합성(공간 단위).
     # allow_authenticated(opt-in 전용): public_acl_group sentinel 부여 → 모든 인증 사용자 허용.
+    # (space_fallback 은 2026-06-11 제거 — ACL 값에 space key 를 싣는 레거시 모델 폐기,
+    #  회의 결정 "allowed_groups 내 스페이스 키 완전 제거". ADR 0002 superseded.)
     #   ⚠ Admin Key 실측에서 page restriction 이 비어도 상위(folder/page/space) 권한 상속으로
     #   조회가 막히는 사례가 확인됐다(adapters/atlassian.py docstring). ancestor restriction
     #   조회 구현 전까지 allow_authenticated 는 상속 제한 문서를 전체 인증 사용자에게 노출할

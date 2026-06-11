@@ -170,16 +170,23 @@ class _UrllibTrashHttpTransport:
 class ConfluenceTrashContentClient:
     """``status=trashed`` content 를 Confluence v1 REST 로 조회하는 실 클라이언트(urllib).
 
-    URL 구성·인증 헤더(Bearer + 선택 Admin Key)·``_links.next`` 처리만 담당한다. 실제
-    네트워크는 ``_TrashHttpTransport`` 로 주입해(기본 urllib) 단위테스트에서 fake 로 대체
-    가능하다. access_token 은 로그·예외에 남기지 않는다.
+    URL 구성·인증 헤더·``_links.next`` 처리만 담당한다. 실제 네트워크는
+    ``_TrashHttpTransport`` 로 주입해(기본 urllib) 단위테스트에서 fake 로 대체 가능하다.
+    credential 은 로그·예외에 남기지 않는다.
+
+    자격증명 모델(api-spec v2.6.1, 2026-06-11 정정): ``use_admin_key=True`` 면
+    ``admin_authorization``(``Basic base64(adminEmail:adminApiToken)``) + Admin Key 헤더를
+    **site URL**(``site_url``) 에서 사용한다 — OAuth Bearer/게이트웨이 경로에서는 admin-key
+    가 동작하지 않는다(위반 시 trashed 페이지 무음 누락). False 면 종전 Bearer 게이트웨이.
 
     Attributes:
-        cloud_id: Confluence cloudId.
-        access_token: OAuth access token(로그 금지).
+        cloud_id: Confluence cloudId (OAuth 게이트웨이 경로용).
+        access_token: OAuth access token(로그 금지 — admin-key 경로에서는 미사용).
         use_admin_key: Admin Key header 포함 여부(권한 무관 전수 조회 시).
         page_limit: 페이지당 ``limit`` (기본 100).
         transport: HTTP GET seam(주입). None 이면 urllib 기본 transport.
+        site_url: admin-key 경로의 site origin(예: https://{site}.atlassian.net).
+        admin_authorization: admin-key 경로의 Authorization 헤더 값(Basic ...).
     """
 
     cloud_id: str
@@ -187,6 +194,36 @@ class ConfluenceTrashContentClient:
     use_admin_key: bool = False
     page_limit: int = 100
     transport: _TrashHttpTransport | None = None
+    site_url: str = ""
+    admin_authorization: str = ""
+
+    def __post_init__(self) -> None:
+        if self.use_admin_key and not (self.site_url and self.admin_authorization):
+            raise ValueError(
+                "use_admin_key=True 에는 site_url/admin_authorization 이 필수다 — admin-key 는 "
+                "admin API Token 의 Basic 인증으로만 site URL 에서 동작한다(api-spec v2.6.1)"
+            )
+
+    @classmethod
+    def from_settings(cls, settings: Any) -> ConfluenceTrashContentClient:
+        """Settings 로 모드별 클라이언트를 조립한다(admin-key: Basic+site / OAuth: Bearer)."""
+        if settings.atlassian_use_admin_key:
+            from app.adapters.atlassian import build_admin_basic_authorization
+
+            return cls(
+                cloud_id=settings.atlassian_cloud_id,
+                access_token="",
+                use_admin_key=True,
+                site_url=settings.atlassian_site_url.rstrip("/"),
+                admin_authorization=build_admin_basic_authorization(
+                    settings.atlassian_admin_email,
+                    settings.atlassian_admin_api_token.get_secret_value(),
+                ),
+            )
+        return cls(
+            cloud_id=settings.atlassian_cloud_id,
+            access_token=settings.atlassian_access_token.get_secret_value(),
+        )
 
     def fetch_trashed(self, *, space_key: str, cursor: str | None) -> dict[str, Any]:
         transport = self.transport or _UrllibTrashHttpTransport()
@@ -194,6 +231,8 @@ class ConfluenceTrashContentClient:
         return transport.get_json(url, self._headers())
 
     def _wiki_base(self) -> str:
+        if self.site_url:
+            return f"{self.site_url}/wiki"
         return f"{_CONFLUENCE_API_ORIGIN}/ex/confluence/{self.cloud_id}/wiki"
 
     def _initial_url(self, space_key: str) -> str:
@@ -212,14 +251,20 @@ class ConfluenceTrashContentClient:
         if next_path.startswith("http://") or next_path.startswith("https://"):
             return next_path
         if next_path.startswith("/wiki/"):
+            if self.site_url:
+                return f"{self.site_url}{next_path}"
             return urljoin(_CONFLUENCE_API_ORIGIN, f"/ex/confluence/{self.cloud_id}{next_path}")
         return f"{self._wiki_base()}{next_path}"
 
     def _headers(self) -> dict[str, str]:
-        headers = {
+        # admin-key 경로(v2.6.1): Basic + Admin Key 헤더 — Bearer 로는 admin-key 미동작.
+        if self.use_admin_key:
+            return {
+                "Accept": "application/json",
+                "Authorization": self.admin_authorization,
+                "Atl-Confluence-With-Admin-Key": "true",
+            }
+        return {
             "Accept": "application/json",
             "Authorization": f"Bearer {self.access_token}",
         }
-        if self.use_admin_key:
-            headers["Atl-Confluence-With-Admin-Key"] = "true"
-        return headers

@@ -71,8 +71,10 @@ class JsonFixtureSourceAdapter(DocumentSourceAdapter):
     samples/*.json(Atlassian-Python-API 응답 포맷)을 표준 PageObject로 변환한다.
 
     [ACL 합성 — PoC]
-    샘플 데이터에 ACL 필드가 없으므로 space_key 기반으로 allowed_groups를 합성한다.
-    실제 ACL 연동 시 ``_synthesize_acl``만 교체한다 (docs/db-schema.md §1.4 미해결 사항).
+    샘플 데이터에 ACL 필드가 없으므로 공개 sentinel(``"*"`` — 모든 인증 사용자 허용,
+    ADR 0003 공유 계약)을 부여한다. 2026-06-11 회의 결정으로 종전 space_key 기반
+    ``["space:{key}"]`` 합성은 제거됐다(ACL 값의 space key 레거시 폐기 — ADR 0002
+    superseded). 데모 픽스처는 비밀 문서가 아니므로 전 인증 사용자 검색 허용이 정합.
 
     [첨부 처리]
     샘플 JSON은 첨부 메타(filename/content_type)만 가진다. 누락 필드는 합성하며,
@@ -130,8 +132,14 @@ class JsonFixtureSourceAdapter(DocumentSourceAdapter):
             yield from data.get("single_page_responses", [])
 
     def _synthesize_acl(self, space_key: str) -> tuple[list[str], list[str]]:
-        """PoC ACL 합성 — space_key 기반 그룹. 실제 ACL 연동 시 교체한다."""
-        return [f"space:{space_key}"], []
+        """PoC ACL 합성 — 공개 sentinel ``"*"`` 부여(2026-06-11, space key 레거시 제거).
+
+        검색 측 ``build_acl_filter`` 가 모든 principal 매칭에 동일 sentinel 을 주입하므로
+        (ADR 0003 공유 계약) 데모 픽스처는 어떤 인증 사용자로도 검색된다. ``space_key``
+        인자는 호출부 시그니처 보존용(미사용).
+        """
+        del space_key  # space key 는 더 이상 ACL 값에 싣지 않는다(회의 결정 2026-06-11).
+        return ["*"], []
 
     def _map_page(self, raw: dict) -> PageObject:
         """Atlassian 페이지 응답(dict) → 표준 PageObject."""

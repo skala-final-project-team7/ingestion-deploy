@@ -85,24 +85,23 @@ payload 필드로 복원한다.
 검색 시 ACL 필터는 `@enforce_acl` 데코레이터에서 항상 `AND`로 주입된다. ACL 조건이 빠진 검색
 호출은 `ACLViolationError`로 거부된다. 상세는 `docs/rag-pipeline-design.md` §6.
 
-> **✓ ACL 필드 모델 (api-spec v2.4/v2.5) — page-level `allowed_groups`/`allowed_users` 채택,
-> `space_key` 합성은 Admin-Key-OFF 폴백** (ingestion↔rag 합의, **ADR 0003** 참조).
-> 설계서·기획서 §6.6은 ACL을 청크별 `allowed_groups`/`allowed_users` Payload로 정의한다. 초기에는
-> 명세에 페이지 단위 권한 API가 없다고 보아 Space 단위 합성을 PoC 로 썼으나, 이후 Admin Key +
-> page-level read restriction(`/rest/api/content/{id}/restriction/byOperation/read`)으로 페이지별
-> 권한 수집이 가능함이 확인되어 아래 **(B) page-level 을 채택**하고 (A) `space_key` 합성은 Admin Key
-> 미사용 시 폴백으로 둔다.
+> **✓ ACL 필드 모델 (api-spec v2.4~v2.6) — page-level `allowed_groups`/`allowed_users` 단일 채택**
+> (ingestion↔rag 합의, **ADR 0003** 참조). 설계서·기획서 §6.6은 ACL을 청크별
+> `allowed_groups`/`allowed_users` Payload로 정의한다. **2026-06-11 회의 결정으로 ACL 값의
+> space key 레거시(종전 (A) `["space:{space_key}"]` 합성·`space_fallback` 정책)는 완전
+> 제거됐다(ADR 0002 superseded)** — `allowed_groups` 값은 Confluence **groupId**(api-spec
+> v2.6.0 §2-1), `allowed_users` 는 accountId 다.
 >
-> - **(A) `space_key` 기반 — PoC 폴백(admin key off).** `atlassian_use_admin_key=False`이면 수집 시
->   `allowed_groups`를 `["space:{space_key}"]`로 합성하고(`_synthesize_acl`/`synthesize_space_acl`),
->   검색 시 `app/query/acl.py:build_acl_filter`가 JWT `groups`(`space:{key}` 형식 — ADR 0002)를
->   `allowed_groups`에 OR 매칭한다. 입도는 스페이스 단위.
-> - **(B) `allowed_groups`/`allowed_users`(페이지별) — 채택(admin key on).** `atlassian_use_admin_key=True`
->   이면 Admin Key 로 `/rest/api/content/{pageId}/restriction/byOperation/read` 를 조회해
+> - **page-level `allowed_groups`/`allowed_users` (admin key on — 운영 경로).**
+>   `atlassian_use_admin_key=True` 이면 admin API Token 의 Basic 인증 + Admin Key 헤더로
+>   site URL 에서 `/rest/api/content/{pageId}/restriction/byOperation/read` 를 조회해
 >   page-level read restriction 을 `allowed_groups`/`allowed_users`로 매핑한다
->   (`ConfluenceRestrictionAclProvider`). Full Crawl 은 Admin Key 로 접근 가능한 **전체 스페이스**를
->   수집하므로 space key 입력은 불필요하다. group 식별자 우선순위/prefix 는
->   `atlassian_group_acl_field_order` / `atlassian_group_acl_prefix` 로 제어한다.
+>   (`ConfluenceRestrictionAclProvider`, api-spec v2.6.1 §1-4). Full Crawl 은 접근 가능한
+>   **전체 스페이스**를 수집하므로 space key 입력은 불필요하다. group 식별자 우선순위/prefix 는
+>   `atlassian_group_acl_field_order`(기본 id 우선) / `atlassian_group_acl_prefix` 로 제어한다.
+> - **admin key off**: restriction 미조회 → 빈 ACL(fail-closed — 색인 단계 `INVALID_ACL`
+>   제외). JSON 픽스처(PoC)는 공개 sentinel `"*"` 를 부여한다(데모 데이터 — 전 인증 사용자
+>   검색 허용, ADR 0003 공유 sentinel 계약).
 >
 > **빈 restriction 처리 (`atlassian_empty_restriction_policy`)** — page-level restriction 이 비어 있는
 > 페이지(=조직 내 인증 사용자 누구나 열람 가능)는 다음 정책으로 분기한다:
@@ -110,11 +109,11 @@ payload 필드로 복원한다.
 >   `"*"`)을 부여해 **모든 인증 사용자**에게 허용한다. **공유 계약** — 이 sentinel 이 실제 검색 허용으로
 >   이어지려면 RAG `app/query/acl.py:build_acl_filter` 가 동일 토큰을 모든 principal 의 `groups`에
 >   주입해야 한다(ingestion↔rag, **ADR 0003**). 미주입 시 색인은 되지만 검색에 노출되지 않는다.
-> - `space_fallback`: `["space:{space_key}"]` 합성(공간 단위 폴백).
 > - `mark_missing`: 빈 ACL 유지 → 색인 단계 `INVALID_ACL` 로 차단(보수 정책).
+> - (`space_fallback` 은 2026-06-11 제거 — ACL 값의 space key 레거시 폐기.)
 >
-> 모델 교체 여지 보존을 위해 Payload는 `space_key` + `allowed_groups` + `allowed_users`를 **모두
-> 인덱싱**한 채로 둔다. 검색 필터 생성은 `app/query/acl.py`에 격리돼 결정에 따라 그 함수만 교체한다.
+> Payload의 `space_key` 는 **식별/표시·메타 필터 필드**로 유지된다(ACL 값으로는 미사용).
+> 검색 필터 생성은 `app/query/acl.py`에 격리돼 모델 변경 시 그 함수만 교체한다.
 
 ---
 
@@ -195,7 +194,7 @@ Data Ingestion Agent(Full Crawl) / Data Sync Agent(Delta) 가 수집한 표준 `
 | `body_html` | string | Confluence storage HTML 원문(청커가 파싱) |
 | `version_number` | integer | 재색인 멱등성 비교 키 |
 | `last_modified` | datetime(ISO) | Delta Sync 변경 비교 키 |
-| `allowed_groups` / `allowed_users` | string[] | 운영 ACL(page-level read restriction; 빈 권한은 `"*"` sentinel). Admin-Key-OFF는 `space:{key}` 합성 폴백 — §1.4 |
+| `allowed_groups` / `allowed_users` | string[] | 운영 ACL(page-level read restriction — groupId/accountId; 빈 권한은 `"*"` sentinel). Admin-Key-OFF는 빈 ACL(fail-closed) — §1.4 (space key 합성 폴백은 2026-06-11 제거) |
 | `webui_link` | string | 출처 카드 원본 URL |
 | `labels` / `ancestors` / `attachments` | array | 에이전트 MVP 미산출 → 현재 빈 배열(TBD) |
 
