@@ -5,6 +5,22 @@
 
 ---
 
+## 2026-06-11 — Codex 작업 지침 표면 추가
+
+**작업**: 기존 Claude Code 중심 문서 체계를 Codex에서도 바로 사용할 수 있도록 `AGENTS.md` 계층을
+추가했다. 루트 `AGENTS.md`는 저장소 공통 규칙, `app/AGENTS.md`는 `app/`·`tests/` 전용 규칙을 담는다.
+기존 `CLAUDE.md`와 `app/CLAUDE.md`는 Claude Code 호환을 위해 유지하고, 규칙 변경 시 두 계열을 함께
+갱신하도록 상호 참조를 추가했다.
+
+**변경 범위**
+
+- `AGENTS.md`, `app/AGENTS.md`: Codex용 지속 지침 추가.
+- `CLAUDE.md`, `app/CLAUDE.md`: Codex 문서와의 연결 문구 추가.
+- `docs/ai/workflow.md`: Claude Code 전용 표현을 Codex/Claude 공용 작업 플로우로 조정.
+- `README.md`: AI 작업 지침 섹션 추가.
+
+**검증**: 문서 변경만 수행. `git diff --check` 통과.
+
 ## 2026-05-26 — ADR 0003 항목 3 운영 wiring: crawl 잡 기록 연결 (ingestion 단독)
 
 **작업**: 항목 3에서 `crawler.run_full_crawl`에 optional `jobs` 주입을 추가했으나, in-process

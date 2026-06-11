@@ -27,6 +27,12 @@ RabbitMQ 기반 비동기 파이프라인으로 동작한다.
 
 자세한 흐름은 `docs/architecture.md`, 진행 계획은 `docs/ai/current-plan.md` 참조.
 
+## AI 작업 지침
+
+- Codex는 루트 `AGENTS.md`와 하위 `app/AGENTS.md`를 기준으로 작업한다.
+- 기존 Claude Code 세션과의 호환을 위해 `CLAUDE.md`와 `app/CLAUDE.md`도 유지한다.
+- 작업 계획은 `docs/ai/current-plan.md`, 작업 기록은 `docs/ai/working-log.md`에 남긴다.
+
 ## 실행 · 통합 계약 (인프라 담당자용)
 
 > 컨테이너화·CI·배포는 인프라에서 담당한다. 통합에 필요한 계약을 아래 한 곳에 모은다.

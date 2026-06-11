@@ -1,6 +1,6 @@
-# Claude Code Workflow
+# AI Coding Agent Workflow
 
-이 문서는 Claude Code를 사용해 팀 프로젝트를 진행할 때 따르는 공통 작업 흐름을 정의한다.
+이 문서는 Codex 또는 Claude Code를 사용해 팀 프로젝트를 진행할 때 따르는 공통 작업 흐름을 정의한다.
 
 ---
 
@@ -8,11 +8,12 @@
 
 ### 1.1 루트 디렉토리에서 실행
 
-Claude Code는 프로젝트 루트 디렉토리에서 실행한다.
+AI coding agent는 프로젝트 루트 디렉토리에서 실행한다.
 
 ```bash
 cd <project-root>
-claude
+codex
+# 또는 claude
 ```
 
 ---
@@ -22,6 +23,7 @@ claude
 작업 시작 전 다음 문서를 확인한다.
 
 - `CLAUDE.md`
+- `AGENTS.md`
 - `docs/architecture.md`
 - `docs/conventions.md`
 - `docs/api-spec.md`
@@ -36,7 +38,7 @@ claude
 | 구조 변경 | `docs/architecture.md` |
 | 코드 작성 | `docs/conventions.md` |
 | 테스트 작성 | `docs/conventions.md` |
-| Claude Code 작업 방식 확인 | `docs/ai/workflow.md` |
+| AI coding agent 작업 방식 확인 | `docs/ai/workflow.md` |
 
 ---
 
@@ -80,7 +82,7 @@ POST /api/conversations API가 동작하고, Service 테스트와 Controller 테
 
 ### 2.1 구현 전 Plan 작성
 
-구현 전에 Claude Code에게 먼저 Plan을 작성하게 한다.
+구현 전에 AI coding agent에게 먼저 Plan을 작성하게 한다.
 
 Plan에는 다음 내용이 포함되어야 한다.
 
@@ -289,4 +291,4 @@ Plan의 1단계만 먼저 구현해.
 - DB Schema 변경 후 문서를 수정하지 않은 상태로 끝내지 않는다.
 - 다른 팀원 담당 영역을 임의로 수정하지 않는다.
 - Secret, Token, Credential을 코드에 포함하지 않는다.
-- Claude Code가 제안한 내용을 검토 없이 그대로 반영하지 않는다.
+- AI coding agent가 제안한 내용을 검토 없이 그대로 반영하지 않는다.
