@@ -124,6 +124,40 @@ def test_run_ingest_job_success_publishes_completed_event() -> None:
     assert "accessToken" not in payload
 
 
+def test_run_ingest_job_success_publishes_completed_event_without_sensitive_fields() -> None:
+    store = _FakeJobStore()
+    completion_publisher = _FakeCompletionPublisher()
+    deps = IngestDeps(
+        job_store=store,
+        run_crawl=lambda _req: CrawlResult(space_key="CLOUD", pages_collected=2, failed_page_ids=[]),
+        sync_worker=_FakeSyncWorker(),
+        completion_publisher=completion_publisher,
+    )
+
+    run_ingest_job(
+        deps,
+        job_id="job-success-sensitive",
+        mode="full",
+        crawl_request=CrawlRequest(
+            admin_user_id="admin-abc",
+            access_token="top-secret-token",
+            cloud_id="cloud-id-123",
+        ),
+    )
+
+    payload = completion_publisher.events[0].to_payload()
+    assert payload["status"] == "COMPLETED"
+    assert payload["eventType"] == "INGEST_COMPLETED"
+    assert payload["jobId"] == "job-success-sensitive"
+    assert payload["adminUserId"] == "admin-abc"
+    assert payload["mode"] == "full"
+    assert "accessToken" not in payload
+    assert "refreshToken" not in payload
+    assert "cloudId" not in payload
+    assert "adminApiToken" not in payload
+    assert "adminEmail" not in payload
+
+
 def test_run_ingest_job_failure_publishes_failed_event() -> None:
     store = _FakeJobStore()
     completion_publisher = _FakeCompletionPublisher()
@@ -150,6 +184,41 @@ def test_run_ingest_job_failure_publishes_failed_event() -> None:
     assert payload["errorCode"] == "INGEST_FAILED"
     assert "crawl failed" in str(payload["message"])
     assert "accessToken" not in payload
+
+
+def test_run_ingest_job_failure_publishes_failed_event_without_sensitive_fields() -> None:
+    store = _FakeJobStore()
+    completion_publisher = _FakeCompletionPublisher()
+    deps = IngestDeps(
+        job_store=store,
+        run_crawl=lambda _req: (_ for _ in ()).throw(RuntimeError("crawl failed")),
+        sync_worker=_FakeSyncWorker(),
+        completion_publisher=completion_publisher,
+    )
+
+    run_ingest_job(
+        deps,
+        job_id="job-failed-sensitive",
+        mode="full",
+        crawl_request=CrawlRequest(
+            admin_user_id="admin-abc",
+            access_token="top-secret-token",
+            cloud_id="cloud-id-123",
+        ),
+    )
+
+    payload = completion_publisher.events[0].to_payload()
+    assert payload["status"] == "FAILED"
+    assert payload["eventType"] == "INGEST_FAILED"
+    assert payload["errorCode"] == "INGEST_FAILED"
+    assert "crawl failed" in str(payload["message"])
+    assert payload["jobId"] == "job-failed-sensitive"
+    assert payload["adminUserId"] == "admin-abc"
+    assert "accessToken" not in payload
+    assert "refreshToken" not in payload
+    assert "cloudId" not in payload
+    assert "adminApiToken" not in payload
+    assert "adminEmail" not in payload
 
 
 def test_run_ingest_job_failure_still_publishes_failed_event_if_job_update_fails() -> None:
