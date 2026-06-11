@@ -5,6 +5,89 @@
 
 ---
 
+## 2026-06-11 — featureI-7c Step 1 완료: completion 이벤트 DTO/스키마 정합
+
+**작업**: `IngestCompletionEvent` 스키마와 필수 필드를 API-spec v2.5.0 기준으로 정합.
+
+**변경 범위**
+
+- `app/api/ingest_completion.py`
+  - `jobId/adminUserId/mode/status/completedAt` 중심 payload 계약 적용.
+  - `status` 허용값을 `COMPLETED|FAILED`로 제한.
+
+## 2026-06-11 — featureI-7c Step 2 완료: MQ 발행 계약 정합
+
+**작업**: completion 발행 기본 라우팅 계약 정리.
+
+**변경 범위**
+
+- `app/ingestion/workers/publisher.py`
+  - 기본 exchange `""`, 기본 routing key `lina.admin.ingest.completion` 정합.
+  - `delivery_mode=2`, `content_type="application/json"` 적용.
+
+## 2026-06-11 — featureI-7c Step 3 완료: ingestion worker publish 연결
+
+**작업**: 수집 성공/실패 종료 경로에서 completion publish 호출 연결.
+
+**변경 범위**
+
+- `app/ingestion/workers/ingestion_worker.py`
+  - full/delta 수집 종료 분기에서 COMPLETED/FAILED 이벤트 발행 보강.
+
+## 2026-06-11 — featureI-7c Step 4 완료: 실패 경로에서 FAILED 강제 발행 보장
+
+**작업**: 수집 실패 시 publish 보장을 강화.
+
+**변경 범위**
+
+- `app/ingestion/workers/ingestion_worker.py`
+  - 실패 경로에서 completion publish의 선행/우선 보장 강화.
+
+## 2026-06-11 — featureI-7c Step 5 완료: publish 실패 처리/재시도 정합
+
+**작업**: publisher 실패 재시도/로그/민감정보 처리 정합화.
+
+**변경 범위**
+
+- `app/ingestion/workers/publisher.py`
+  - 재시도 정책, backoff, 실패 시 민감정보 마스킹 로그 보완.
+
+## 2026-06-11 — featureI-7c Step 6 완료: completion 큐/라우팅 설정 정비
+
+**작업**: completion 큐/키 기본값을 config로 정비.
+
+**변경 범위**
+
+- `app/config.py`
+  - `ingest_completion_routing_key`, completion queue/DLQ 기본값 설정 정비.
+
+## 2026-06-11 — featureI-7c Step 7 완료: 기본 단위 테스트 정리
+
+**작업**: worker 중심 completion 이벤트 단위 테스트 보강.
+
+**변경 범위**
+
+- `tests/ingestion/test_ingestion_worker.py`
+  - 성공/실패 publish 상태 검증 및 민감 필드 미포함 보강.
+
+## 2026-06-11 — featureI-7c Step 8 완료: completion 이벤트 전용 테스트 추가
+
+**작업**: Step 8 전용 테스트 스위트 추가.
+
+**변경 범위**
+
+- `tests/ingestion/test_completion_events.py`(신규)
+  - `job_id` 누락/`admin_user_id` 보정/비터미널 status 유효성 검증.
+  - `exchange`, `routing_key`, `delivery_mode`, `content_type` 발행 속성 검증.
+
+**검증**
+
+- `python3 -m pytest tests/ingestion/test_completion_events.py`: 실행 환경에서 `pytest` 미설치로 보류.
+
+**남은 리스크/후속**
+
+- Step 9 통합 테스트는 미진행.
+
 ## 2026-06-11 — Codex 작업 지침 표면 추가
 
 **작업**: 기존 Claude Code 중심 문서 체계를 Codex에서도 바로 사용할 수 있도록 `AGENTS.md` 계층을
