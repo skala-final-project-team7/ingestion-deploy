@@ -20,6 +20,12 @@
     dead config 해소) / build_delta_runner(run_delta_sync + full crawl 과 동일 acl_provider).
     RabbitMQ 연결 소유는 여전히 infra 책임(featureI-7c) — 채널/QueuePublisher 만 받으면
     한 줄로 배선되도록 조립부를 제공한다.
+  - 2026-06-11, 배포 전 점검 fix — 운영 RabbitMQ wiring 을 본 레포가 직접 소유하도록 전환.
+    open_rabbitmq_channel(durable 큐 선언) / build_request_source_adapter(요청 자격증명 +
+    Settings ACL 구성) / build_real_crawl_runner(실 raw_store+jobs+발행, 잡 단위 연결) /
+    build_real_delta_runner / build_real_completion_publisher 추가. 종전에는 API 가
+    use_real_adapters=True 에서도 run_poc_ingestion(전부 Fake)으로 고정되어 실 Qdrant 에
+    아무것도 적재되지 않았다(무음 결함 — build_ingest_deps 의 운영 분기에서 소비).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x
@@ -31,7 +37,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from app.config import Settings, get_settings
 from app.ingestion.embedder.base import FakeDenseEmbedder, FakeSparseEmbedder
@@ -44,8 +50,10 @@ from app.storage.qdrant_fake import FakeQdrantPoolStore
 from app.storage.raw_store import FakeRawPageStore, RawPageStore
 
 if TYPE_CHECKING:
+    from app.adapters.base import DocumentSourceAdapter
     from app.api.ingest_completion import IngestCompletionPublisher
     from app.ingestion.attachment_downloader import AttachmentDownloader
+    from app.ingestion.crawler import CrawlRequest, CrawlResult
     from app.ingestion.document_analyzer import DocumentAnalyzer
     from app.ingestion.soft_delete import SoftDeleteStore
 
@@ -236,3 +244,180 @@ def build_soft_delete_store(settings: Settings | None = None) -> SoftDeleteStore
     from app.storage.qdrant_client import QdrantPoolStore
 
     return QdrantPoolStore.from_settings(resolved)
+
+
+# --- 운영 RabbitMQ wiring (배포 전 점검 fix, 2026-06-11) ---
+# 종전에는 "RabbitMQ 연결 소유 = infra 책임" 으로 미뤄 두었으나, HTTP API 가
+# use_real_adapters=True 에서도 run_poc_ingestion(전부 Fake store)으로 고정 동작해
+# 실 Confluence 를 크롤링하고도 실 Qdrant 에 아무것도 적재되지 않는 무음 결함이 있었다.
+# 아래 헬퍼들로 API 가 직접 운영 경로(실 raw_store/Mongo jobs + RabbitMQ 발행)를 조립한다.
+# 연결은 **잡 단위로 열고 닫는다** — pika BlockingConnection 은 thread-safe 하지 않고
+# BackgroundTasks 가 threadpool 에서 잡을 돌리므로, 잡마다 독립 연결이 가장 안전하다
+# (full crawl 은 장시간·저빈도라 연결 비용이 무시 가능).
+
+
+def open_rabbitmq_channel(settings: Settings | None = None) -> tuple[Any, Any]:
+    """RabbitMQ BlockingConnection + channel 을 연다(호출자가 connection.close() 책임).
+
+    발행 대상 큐(``content.chunking`` / completion 라우팅 키)를 durable 로 선언해
+    consumer(워커/BFF)가 늦게 떠도 메시지가 유실되지 않게 한다(멱등 — 이미 있으면 no-op).
+    publisher 는 default exchange 를 쓰므로 routing_key == queue 이름이다.
+
+    Returns:
+        ``(connection, channel)`` 튜플.
+    """
+    import pika
+
+    from app.ingestion.workers import QUEUE_CHUNKING
+
+    resolved = settings or get_settings()
+    connection = pika.BlockingConnection(pika.URLParameters(resolved.rabbitmq_url))
+    channel = connection.channel()
+    channel.queue_declare(queue=QUEUE_CHUNKING, durable=True)
+    channel.queue_declare(queue=resolved.ingest_completion_routing_key, durable=True)
+    return connection, channel
+
+
+def build_request_source_adapter(
+    settings: Settings, *, cloud_id: str, access_token: str
+) -> DocumentSourceAdapter:
+    """요청 주입 자격증명 + Settings 의 ACL/재시도 구성으로 Atlassian 어댑터를 만든다.
+
+    api-spec v2.5.0 흐름(BFF 가 잡마다 access_token/cloud_id 전달)용. ``from_settings``
+    와 동일한 acl_provider/딜레이/재시도/Admin Key 구성을 쓰되 자격증명만 요청 값으로
+    교체한다 — 종전 ``run_full_crawl(adapter=None)`` 의 bare 생성자 경로는 Settings 의
+    restriction ACL 구성이 빠져 운영 ACL 정책과 어긋났다.
+    """
+    from app.adapters.atlassian import AtlassianSourceAdapter, build_restriction_acl_provider
+
+    return AtlassianSourceAdapter(
+        cloud_id=cloud_id,
+        access_token=access_token,
+        acl_provider=build_restriction_acl_provider(settings),
+        request_delay_seconds=settings.atlassian_request_delay_seconds,
+        max_retries=settings.atlassian_max_retries,
+        timeout_seconds=settings.atlassian_timeout_seconds,
+        use_admin_key=settings.atlassian_use_admin_key,
+    )
+
+
+def build_real_crawl_runner(
+    settings: Settings,
+    *,
+    fallback_source: DocumentSourceAdapter | None = None,
+    raw_store: RawPageStore | None = None,
+) -> Callable[[CrawlRequest], CrawlResult]:
+    """운영 full-crawl 러너 — 실 raw_store(Mongo) + Mongo jobs + RabbitMQ 발행.
+
+    ``run_full_crawl`` 로 페이지를 Mongo ``raw_pages`` 에 적재하고 ``content.chunking``
+    메시지를 실 RabbitMQ 로 발행한다(소비·색인은 chunking worker —
+    ``python -m app.ingestion.workers.chunking_main``).
+
+    어댑터 선택(잡 단위):
+      1. 요청에 access_token+cloud_id 가 있으면 요청 자격증명 어댑터(v2.5.0 BFF 흐름).
+      2. 없으면 ``fallback_source`` (Settings 기반 — json_fixture 스테이징 포함).
+      3. 둘 다 없으면 RuntimeError — 잡이 FAILED 로 기록되고 원인이 로그에 남는다.
+
+    Args:
+        settings: 환경 설정.
+        fallback_source: 요청 자격증명이 없을 때 쓸 startup 어댑터(없으면 None).
+        raw_store: 공유할 raw_store(미주입 시 ``build_raw_page_store`` 로 생성).
+
+    Returns:
+        ``CrawlRequest -> CrawlResult`` 러너(IngestDeps.run_crawl 주입용).
+    """
+    from app.ingestion.crawler import run_full_crawl
+    from app.ingestion.workers.publisher import PikaQueuePublisher
+    from app.storage.jobs import MongoIngestionJobsRepository
+
+    store = raw_store or build_raw_page_store(settings)
+    jobs = MongoIngestionJobsRepository.from_settings(settings)
+
+    def _run(request: CrawlRequest) -> CrawlResult:
+        if (
+            settings.source_type.lower() == "atlassian"
+            and request.access_token
+            and request.cloud_id
+        ):
+            adapter: DocumentSourceAdapter = build_request_source_adapter(
+                settings, cloud_id=request.cloud_id, access_token=request.access_token
+            )
+        elif fallback_source is not None:
+            adapter = fallback_source
+        else:
+            raise RuntimeError(
+                "full crawl 어댑터를 결정할 수 없다 — 요청에 accessToken/cloudId 가 없고 "
+                "Settings 자격증명(RAG_ATLASSIAN_CLOUD_ID/RAG_ATLASSIAN_ACCESS_TOKEN)도 비어 있다"
+            )
+        connection, channel = open_rabbitmq_channel(settings)
+        try:
+            return run_full_crawl(
+                request,
+                raw_store=store,
+                publisher=PikaQueuePublisher(channel),
+                adapter=adapter,
+                jobs=jobs,
+            )
+        finally:
+            connection.close()
+
+    return _run
+
+
+def build_real_delta_runner(
+    settings: Settings,
+    *,
+    raw_store: RawPageStore | None = None,
+) -> Callable[[DeltaSyncRequest], DeltaSyncResult]:
+    """운영 delta 러너 — ``build_delta_runner`` 에 잡 단위 RabbitMQ 연결을 입힌다.
+
+    종전 ``IngestDeps.run_delta`` 기본값(``_poc_empty_delta``)은 운영에서도 항상
+    "변경 0건" 을 반환했다. 본 러너는 실 raw_store + 실 발행으로 변경분이 chunking
+    worker 까지 흐르게 한다. 연결은 잡마다 열고 닫는다(BackgroundTasks threadpool 안전).
+    """
+    store = raw_store or build_raw_page_store(settings)
+
+    def _run(request: DeltaSyncRequest) -> DeltaSyncResult:
+        from app.ingestion.workers.publisher import PikaQueuePublisher
+
+        connection, channel = open_rabbitmq_channel(settings)
+        try:
+            runner = build_delta_runner(
+                settings,
+                raw_store=store,
+                queue_publisher=PikaQueuePublisher(channel),
+            )
+            return runner(request)
+        finally:
+            connection.close()
+
+    return _run
+
+
+class _PerPublishPikaPublisher(QueuePublisher):
+    """발행 1회마다 연결을 열고 닫는 publisher — completion event(잡당 1건) 전용.
+
+    BackgroundTasks threadpool 에서 여러 잡이 동시에 terminal 상태에 도달해도 연결을
+    공유하지 않아 thread-safe 하다. 고빈도 발행 경로(content.chunking)에는 쓰지 않는다.
+    """
+
+    def __init__(self, settings: Settings) -> None:
+        self._settings = settings
+
+    def publish(self, *, routing_key: str, message: dict[str, object]) -> None:
+        from app.ingestion.workers.publisher import PikaQueuePublisher
+
+        connection, channel = open_rabbitmq_channel(self._settings)
+        try:
+            PikaQueuePublisher(channel).publish(routing_key=routing_key, message=message)
+        finally:
+            connection.close()
+
+
+def build_real_completion_publisher(settings: Settings) -> IngestCompletionPublisher:
+    """운영 completion event publisher — 잡 terminal 상태를 실 RabbitMQ 로 발행한다.
+
+    종전 ``IngestDeps.completion_publisher`` 기본값(Noop)은 운영에서도 이벤트를 발행하지
+    않아 BFF 의 Admin Key 말소 트리거(api-spec v2.5.0)가 영원히 오지 않았다.
+    """
+    return build_ingest_completion_publisher(_PerPublishPikaPublisher(settings), settings)

@@ -25,6 +25,9 @@
     InvalidFileException·python-docx PackageNotFoundError·PyMuPDF FileDataError 등)도 첨부
     단위 UNSUPPORTED_ATTACH_TYPE 로 격리. (3) malformed 메시지(평 KeyError)를 루프에서
     메시지 단위 격리(ERROR 로그 후 skip).
+  - 2026-06-11, 배포 전 점검 fix — run_chunking_worker 를 iter_chunking_worker(스트리밍
+    yield) + list 집계 래퍼로 분리. 운영 PikaMessageConsumer 는 무한 스트림이라 종전
+    list 누적 구현은 장기 실행 시 무한 메모리 증가였다. 격리 정책·기존 시그니처는 보존.
 --------------------------------------------------
 구현 메모(featureI-4/I-3b):
   - 외부 의존성(임베더/Qdrant/cache/raw_store/jobs)은 주입 가능하게 둔다(테스트는 Fake).
@@ -42,7 +45,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -351,12 +354,14 @@ def _process_attachment_message(
     )
 
 
-def run_chunking_worker(
+def iter_chunking_worker(
     consumer: MessageConsumer, deps: ChunkingWorkerDeps
-) -> list[ChunkingMessageResult]:
-    """consumer 스트림의 ``content.chunking`` 메시지를 순서대로 처리한다(얇은 루프).
+) -> Iterator[ChunkingMessageResult]:
+    """consumer 스트림의 ``content.chunking`` 메시지를 순서대로 처리해 yield 한다(얇은 루프).
 
-    각 메시지를 ``process_chunking_message`` 로 처리하고 성공 결과를 모아 반환한다.
+    무한 스트림(운영 PikaMessageConsumer)에서도 결과를 누적하지 않는 스트리밍 형태 —
+    장기 실행 worker 진입점(``chunking_main``)이 사용한다. 유한 스트림(PoC/테스트)의
+    집계는 ``run_chunking_worker`` 래퍼를 그대로 쓴다(기존 시그니처 보존).
 
     회복력: ``RawPageNotFoundError`` / ``AttachmentNotFoundError`` 는 메시지가 가리키는
     ``raw_pages``/``raw_attachments`` 가 없는 **파이프라인 불일치(영구 실패)** 로, 재시도해도
@@ -372,10 +377,9 @@ def run_chunking_worker(
     평 ``KeyError``)는 재시도해도 해소되지 않는 영구 실패**라 메시지 단위로 격리한다
     (A4 — 전파 시 미ack 재전송 poison 루프).
     """
-    results: list[ChunkingMessageResult] = []
     for message in consumer.consume():
         try:
-            results.append(process_chunking_message(message, deps))
+            yield process_chunking_message(message, deps)
         except (RawPageNotFoundError, AttachmentNotFoundError) as exc:
             _LOGGER.warning(
                 "chunking worker: 파이프라인 불일치로 메시지 1건 skip — %s: %s",
@@ -389,7 +393,17 @@ def run_chunking_worker(
                 exc,
                 sorted(message.keys()),
             )
-    return results
+
+
+def run_chunking_worker(
+    consumer: MessageConsumer, deps: ChunkingWorkerDeps
+) -> list[ChunkingMessageResult]:
+    """유한 consumer 스트림을 처리하고 성공 결과 리스트를 반환한다(기존 시그니처 보존).
+
+    격리 정책은 ``iter_chunking_worker`` 와 동일하다(동일 루프의 list 집계 래퍼).
+    운영 무한 스트림에는 결과 누적이 없는 ``iter_chunking_worker`` 를 사용한다.
+    """
+    return list(iter_chunking_worker(consumer, deps))
 
 
 def _record(

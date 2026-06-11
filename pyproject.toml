@@ -59,6 +59,11 @@ agents = [
     "langgraph>=0.2,<0.3",
 ]
 
+[project.scripts]
+# Chunking+Embedding Worker 실행 진입점 (배포 전 점검 fix, 2026-06-11).
+# python -m app.ingestion.workers.chunking_main 과 동일하다.
+ingestion-chunking-worker = "app.ingestion.workers.chunking_main:main"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

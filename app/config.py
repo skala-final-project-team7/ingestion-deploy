@@ -106,6 +106,12 @@ class Settings(BaseSettings):
     # PoC는 localhost·비밀번호 없는 DSN만 사용하므로 평문 문자열을 유지한다.
     mysql_uri: str = "mysql+pymysql://localhost:3306/lina_rag"
 
+    # --- RabbitMQ (운영 분산 파이프라인 — 배포 전 점검 fix, 2026-06-11) ---
+    # use_real_adapters=True 시 HTTP API(full crawl/delta 발행·completion event)와 chunking
+    # worker(소비)가 사용하는 AMQP URL. vhost 는 URL-encode 한다(기본 "/" = %2F).
+    # 시크릿 포함 가능(amqp://user:pass@host)이므로 로그에 출력하지 않는다.
+    rabbitmq_url: str = "amqp://guest:guest@localhost:5672/%2F"
+
     # --- 수집 완료 이벤트 (api-spec v2.5.0) ---
     # 수집 잡이 terminal(COMPLETED/FAILED) 상태에 도달하면 ML/Data Ingestion 이 RabbitMQ
     # completion event 를 발행한다. BFF consumer 가 이를 consume 해 auth-server 의 Admin Key

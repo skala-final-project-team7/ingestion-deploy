@@ -15,6 +15,8 @@
     노출한다. BFF 인증을 우회하는 Prometheus scraper 직접 접근 경로이며 OpenAPI 스키마에서는
     제외(include_in_schema=False)한다. 워커 커스텀 메트릭(prometheus-client)은 워커 프로세스가
     별도로 노출한다.
+  - 2026-06-11, 배포 전 점검 fix — lifespan 기동 모드 명시 로깅(PoC 무음 부팅 가시화).
+    운영 분기 자체는 build_ingest_deps 가 담당한다(app/api/deps.py 동일 일자 fix 참조).
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, FastAPI 0.111+
@@ -24,6 +26,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -35,11 +38,31 @@ from app.api.routes import router as ingest_router
 from app.api.webhook_routes import webhook_router
 from app.config import get_settings
 
+_LOGGER = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """앱 시작 시 수집 의존성(잡 저장소 + 크롤 러너)을 한 번 조립해 app.state 에 보관한다."""
+    """앱 시작 시 수집 의존성(잡 저장소 + 크롤 러너)을 한 번 조립해 app.state 에 보관한다.
+
+    기동 모드를 명시 로그로 남긴다(배포 전 점검 fix, 2026-06-11) — 종전에는 운영 배포에서
+    env 누락으로 PoC(전부 Fake) 부팅이 되어도 healthz 정상 + 잡 성공 보고라 무음이었다.
+    """
     settings = get_settings()
+    if settings.use_real_adapters:
+        _LOGGER.info(
+            "ingestion API 기동 — 운영(real) 모드: source_type=%s qdrant=%s:%s mongo_db=%s "
+            "(full crawl→Mongo raw_pages + RabbitMQ 발행, 색인은 chunking worker)",
+            settings.source_type,
+            settings.qdrant_host,
+            settings.qdrant_port,
+            settings.mongo_db,
+        )
+    else:
+        _LOGGER.warning(
+            "ingestion API 기동 — PoC 모드(in-process 합성·전부 Fake store): 수집 결과가 실 "
+            "Qdrant 에 적재되지 않는다. 운영 배포라면 RAG_USE_REAL_ADAPTERS=true 가 필요하다"
+        )
     app.state.settings = settings
     app.state.ingest_deps = build_ingest_deps(settings)
     try:

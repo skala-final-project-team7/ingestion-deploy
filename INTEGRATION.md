@@ -35,7 +35,19 @@ python -c "import app.api.main"            # 에이전트 import 해결 = ai-age
 ```
 
 > `verify.sh` 는 ruff·pytest 를 요구하므로 `dev` extra 가 필요하다.
-> 비동기 워커(RabbitMQ consumer)는 인프라 소유 실행 loop (HANDOFF §4 Infra, featureI-7c).
+
+## 4b. 운영 wiring (배포 전 점검 fix, 2026-06-11) — 인프라 커스텀 코드 불필요
+종전 "비동기 워커 실행 loop = 인프라 소유(featureI-7c)" 항목은 본 레포가 흡수했다. 인프라는 **프로세스 2개를 띄우고 env 만 주입**하면 된다:
+
+| 프로세스 | 명령 | 역할 |
+|---|---|---|
+| HTTP API | `uvicorn app.api.main:app --port 8001` | `POST /ml/ingest` → 실 Confluence crawl → Mongo `raw_pages` 적재 + RabbitMQ `content.chunking` 발행 · delta(`run_delta_sync`) · 완료 이벤트 발행 |
+| Chunking Worker | `python -m app.ingestion.workers.chunking_main` | `content.chunking` 소비 → 청킹 → Dual Embedding → Qdrant Multi-Pool upsert (`[embedding]` extra 필요) |
+
+- 분기 토글: `RAG_USE_REAL_ADAPTERS=true` (미설정 시 PoC 모드 — 기동 로그에 **WARNING** 출력, 실 Qdrant 미적재)
+- RabbitMQ: `RAG_RABBITMQ_URL` (발행·소비 공용, durable 큐 자동 선언, persistent 발행)
+- 연결 수명: API 는 **잡 단위** 연결(BackgroundTasks threadpool 안전), 워커는 장기 연결 + 자동 재접속(backoff)·SIGTERM 우아 종료·prefetch=1
+- Confluence 자격증명: BFF 가 잡마다 `accessToken`/`cloudId` 전달(v2.5.0) — Settings `RAG_ATLASSIAN_*` 는 fallback. 둘 다 없으면 잡이 명시 FAILED
 
 ## 5. 참고 문서 (원본 워크스페이스)
 - `HANDOFF-ML-2026-06-09.md` — 인프라 seam·운영 기본값 §4·§5
