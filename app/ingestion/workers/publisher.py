@@ -37,12 +37,37 @@ class PublishedMessage:
     body: dict[str, Any]
 
 
+_DEFAULT_EXCHANGE = ""
+"""completion event 기본 발행 exchange.
+
+featureI-7c 기준으로 Data Ingestion completion 이벤트는 default exchange("")를 사용.
+"""
+_DEFAULT_ROUTING_KEY = "lina.admin.ingest.completion"
+"""completion event 기본 routing key.
+
+설정값을 명시적으로 주입하지 않더라도 BFF 기준 큐(`lina.admin.ingest.completion`)로
+직접 바인딩되지 않아도 라우팅되도록 하는 기본값.
+"""
+_DELIVERY_MODE_PERSISTENT = 2
+"""AMQP deliveryMode = 2(PERSISTENT).
+
+completion 이벤트는 Admin Key deactivate 트리거이므로 브로커 재시작 시 유실을 방지.
+"""
+_CONTENT_TYPE_JSON = "application/json"
+"""completion payload의 표준 content-type."""
+
+
 class QueuePublisher(ABC):
     """큐 발행 추상 인터페이스 — crawler/sync 가 호출한다."""
 
     @abstractmethod
-    def publish(self, *, routing_key: str, message: dict[str, Any]) -> None:
-        """``routing_key`` 로 JSON 직렬화 가능한 ``message`` 를 발행한다."""
+    def publish(self, *, routing_key: str = _DEFAULT_ROUTING_KEY, message: dict[str, Any]) -> None:
+        """``routing_key`` 로 JSON 직렬화 가능한 ``message`` 를 발행한다.
+
+        기본값은 completion 이벤트 계약(``default exchange +
+        lina.admin.ingest.completion``)을 따르되, 기존 청크/동기화 큐 경로의
+        호출자는 라우팅 키를 전달해 상위 계약을 오버라이드할 수 있다.
+        """
 
 
 @dataclass(slots=True)
@@ -54,7 +79,8 @@ class FakeQueuePublisher(QueuePublisher):
 
     messages: list[PublishedMessage] = field(default_factory=list)
 
-    def publish(self, *, routing_key: str, message: dict[str, Any]) -> None:
+    def publish(self, *, routing_key: str = _DEFAULT_ROUTING_KEY, message: dict[str, Any]) -> None:
+        # 테스트/PoC 경로에서는 실제 RabbitMQ 없이 기본 계약 경로와 동일한 기본값을 보존한다.
         self.messages.append(PublishedMessage(routing_key=routing_key, body=dict(message)))
 
 
@@ -66,11 +92,13 @@ class PikaQueuePublisher(QueuePublisher):
         exchange: 발행 exchange 이름(기본값은 default exchange "").
     """
 
-    def __init__(self, channel: Any, *, exchange: str = "") -> None:
+    def __init__(self, channel: Any, *, exchange: str = _DEFAULT_EXCHANGE) -> None:
+        # featureI-7c: completion 이벤트 경로의 기본 계약은 exchange="".
         self._channel = channel
         self._exchange = exchange
 
-    def publish(self, *, routing_key: str, message: dict[str, Any]) -> None:
+    def publish(self, *, routing_key: str = _DEFAULT_ROUTING_KEY, message: dict[str, Any]) -> None:
+        # featureI-7c: completion 이벤트 기본 라우팅 경로 + persistence/contentType 정합.
         # lazy import — pika 미설치 환경에서도 모듈 import 가 깨지지 않게(ABC/Fake 사용 경로).
         import pika
 
@@ -81,5 +109,7 @@ class PikaQueuePublisher(QueuePublisher):
             body=body,
             # persistent(delivery_mode=2) — durable queue 와 함께여야 브로커 재시작에도
             # 메시지가 살아남는다(A10 — completion event 유실 = Admin Key TTL 잔존).
-            properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
+            properties=pika.BasicProperties(
+                delivery_mode=_DELIVERY_MODE_PERSISTENT, content_type=_CONTENT_TYPE_JSON
+            ),
         )
