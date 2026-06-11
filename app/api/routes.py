@@ -1,7 +1,7 @@
 """수집 HTTP API 라우트 — POST /ml/ingest + status + health [Pipeline].
 
 --------------------------------------------------
-작성자 : 최태성
+작성자 : 최태성, 이다연
 작성목적 : api-spec v2.4.0 §2-2/§2-3/§2-4-2 의 수집(Data Ingestion) HTTP 계약을 제공한다.
           ``POST /ml/ingest`` 는 잡을 생성(``STARTED``)하고 백그라운드에서 crawl→chunk→
           upsert 를 실행하며, ``GET /ml/ingest/status/{jobId}`` 가 진행 상태·집계 카운트를,
@@ -21,6 +21,9 @@
     ``cloudId`` 직접 전달은 legacy PoC 호환 필드로만 유지한다.
   - 2026-06-09, FR-005 delta 라우팅 — ``mode=delta`` 를 full-crawl 이 아니라 Delta Sync
     (``deps.run_delta``)로 분기하고, terminal 상태에서 completion event(mode="delta")를 발행한다.
+  - 2026-06-11, featureI-7c Step 3 정합 — 백그라운드 수집 잡의 실행/완료 처리 경로를
+    ``app/ingestion/workers/ingestion_worker.py``의 ``run_ingest_job``/``run_delta_ingest_job``으로
+    일괄 위임.
 --------------------------------------------------
 [보안] 요청 ``accessToken``/``cloudId`` 는 로그·응답 본문·completion event payload 에 남기지
        않는다(루트 CLAUDE.md 보안 규칙). 상태 응답·completion event 에는 토큰 관련 필드를 포함하지
@@ -41,10 +44,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.api.deps import IngestDeps
-from app.api.ingest_completion import IngestCompletionEvent, publish_ingest_completion_safely
 from app.ingestion.crawler import CrawlRequest
 from app.ingestion.sync import DeltaSyncRequest
-from app.schemas.enums import IngestJobStatus
+from app.ingestion.workers.ingestion_worker import run_delta_ingest_job, run_ingest_job
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -135,46 +137,13 @@ def _run_ingest_job(deps: IngestDeps, job_id: str, mode: str, crawl_request: Cra
     않는다(``crawl_request`` 전체를 로깅하지 않고 ``job_id`` 만 기록). terminal 상태 도달 후에는
     api-spec v2.5.0 completion event 를 발행한다(발행 실패는 잡 상태를 덮어쓰지 않는다).
     """
-    deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
-    try:
-        result = deps.run_crawl(crawl_request)
-    except Exception as exc:  # noqa: BLE001 — 크롤/외부 호출 예외 광범위 캐치(잡 단위 격리)
-        finished_at = datetime.now(UTC)
-        _LOGGER.exception("ingest job failed: job_id=%s", job_id)
-        deps.job_store.update(
-            job_id,
-            status=IngestJobStatus.FAILED,
-            finished_at=finished_at,
-            error=str(exc),
-        )
-        _publish_ingest_completion(
-            deps,
-            job_id=job_id,
-            mode=mode,
-            status=IngestJobStatus.FAILED,
-            admin_user_id=crawl_request.admin_user_id,
-            error_code="INGEST_FAILED",
-            error=str(exc),
-            finished_at=finished_at,
-        )
-        return
-    finished_at = datetime.now(UTC)
-    failed = len(result.failed_page_ids)
-    deps.job_store.update(
-        job_id,
-        status=IngestJobStatus.COMPLETED,
-        total_pages=result.pages_collected + failed,
-        processed_pages=result.pages_collected,
-        failed_pages=failed,
-        finished_at=finished_at,
-    )
-    _publish_ingest_completion(
+    credential_lookup = getattr(deps, "credential_lookup", None)
+    run_ingest_job(
         deps,
         job_id=job_id,
         mode=mode,
-        status=IngestJobStatus.COMPLETED,
-        admin_user_id=crawl_request.admin_user_id,
-        finished_at=finished_at,
+        crawl_request=crawl_request,
+        credential_lookup=credential_lookup if callable(credential_lookup) else None,
     )
 
 
@@ -188,96 +157,12 @@ def _run_delta_ingest_job(deps: IngestDeps, job_id: str, delta_request: DeltaSyn
     경우만 ``SyncWorker.apply_delta_deletions`` 로 soft-delete 한다(기본 OFF=surface만). terminal
     에서 completion event(mode="delta")를 발행한다.
     """
-    deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
-    try:
-        result = deps.run_delta(delta_request)
-    except Exception as exc:  # noqa: BLE001 — delta/외부 호출 예외 광범위 캐치(잡 단위 격리)
-        finished_at = datetime.now(UTC)
-        _LOGGER.exception("delta ingest job failed: job_id=%s", job_id)
-        deps.job_store.update(
-            job_id,
-            status=IngestJobStatus.FAILED,
-            finished_at=finished_at,
-            error=str(exc),
-        )
-        _publish_ingest_completion(
-            deps,
-            job_id=job_id,
-            mode="delta",
-            status=IngestJobStatus.FAILED,
-            admin_user_id=delta_request.admin_user_id,
-            error_code="INGEST_FAILED",
-            error=str(exc),
-            finished_at=finished_at,
-        )
-        return
-    finished_at = datetime.now(UTC)
-    # 삭제 후보 soft-delete 적용(확인 게이트). 기본 confirm=False 면 no-op(후보 surface만).
-    # apply_delta_deletions/apply_soft_deletes 는 id 단위로 실패를 격리하므로 예외를 전파하지
-    # 않는다 — soft-delete 실패가 수집 잡을 FAILED 로 만들지 않는다(best-effort side-effect).
-    delete_result = deps.sync_worker.apply_delta_deletions(
-        result, confirm=deps.delta_delete_confirm
-    )
-    if delete_result.has_failures:
-        _LOGGER.warning(
-            "delta soft-delete partial failure: job_id=%s deleted=%d failed_pages=%d",
-            job_id,
-            delete_result.total_soft_deleted,
-            len(delete_result.failed_page_ids),
-        )
-    elif delete_result.total_soft_deleted:
-        _LOGGER.info(
-            "delta soft-delete applied: job_id=%s deleted=%d",
-            job_id,
-            delete_result.total_soft_deleted,
-        )
-    deps.job_store.update(
-        job_id,
-        status=IngestJobStatus.COMPLETED,
-        total_pages=result.changed_pages + result.failed_items,
-        processed_pages=result.changed_pages,
-        failed_pages=result.failed_items,
-        finished_at=finished_at,
-    )
-    _publish_ingest_completion(
+    credential_lookup = getattr(deps, "credential_lookup", None)
+    run_delta_ingest_job(
         deps,
         job_id=job_id,
-        mode="delta",
-        status=IngestJobStatus.COMPLETED,
-        admin_user_id=delta_request.admin_user_id,
-        finished_at=finished_at,
-    )
-
-
-def _publish_ingest_completion(
-    deps: IngestDeps,
-    *,
-    job_id: str,
-    mode: str,
-    status: IngestJobStatus,
-    admin_user_id: str | None,
-    finished_at: datetime,
-    error_code: str | None = None,
-    error: str | None = None,
-) -> None:
-    """수집 terminal 상태 도달 후 RabbitMQ completion event 를 발행한다 (api-spec v2.5.0).
-
-    ML 은 Atlassian Admin Key 를 직접 말소하지 않고 BFF HTTP callback 도 호출하지 않는다.
-    BFF consumer 가 completion event 를 consume 하고 auth-server deactivate 내부 API 를 호출한다.
-    event payload 에 credential set(accessToken/refreshToken/cloudId)은 포함하지 않으며, 발행
-    실패는 이미 확정된 잡 terminal 상태를 되돌리거나 덮어쓰지 않는다(``publish_..._safely`` 격리).
-    """
-    publish_ingest_completion_safely(
-        deps.completion_publisher,
-        IngestCompletionEvent(
-            job_id=job_id,
-            mode=mode,
-            status=status,
-            admin_user_id=admin_user_id,
-            error_code=error_code,
-            message=error,
-            completed_at=finished_at,
-        ),
+        delta_request=delta_request,
+        credential_lookup=credential_lookup if callable(credential_lookup) else None,
     )
 
 
