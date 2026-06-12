@@ -1,5 +1,8 @@
 """Chunking+Embedding Worker 단위 테스트 — content.chunking → Qdrant upsert end-to-end.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 실제 Adaptive Chunker(chunk_page) + indexer.index_chunks 를 구동하고, 외부 모델·Qdrant·
 Mongo 는 Fake 로 대체한다(FakeDenseEmbedder/FakeSparseEmbedder/FakeEmbeddingCache +
 in-memory fake Qdrant store). 멱등성·ACL/빈 본문 게이트·잡 기록을 검증한다.

@@ -1,5 +1,8 @@
 """app.ingestion.embedder — Dense / Sparse 임베더 어댑터 패키지 [Pipeline].
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 분리 의도 (app/CLAUDE.md §8 — 외부 호출은 어댑터/클라이언트 계층으로 분리):
 
 - ``base.py`` — ABC 인터페이스(``DenseEmbedder`` / ``SparseEmbedder``) + Fake 구현.

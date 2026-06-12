@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : 수집 파이프라인을 BFF 에 노출하는 HTTP 계층의 진입점. lifespan 에서 ``Settings``
           기반으로 ``build_ingest_deps`` 를 호출해 잡 저장소 + 크롤 러너를 부트스트랩하고
           ``app.state.ingest_deps`` 에 보관한다. 라우트는 ``app.api.routes`` 의 라우터를

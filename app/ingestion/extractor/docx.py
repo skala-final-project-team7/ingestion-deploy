@@ -1,5 +1,8 @@
 """Word(docx) 텍스트 추출 (FR-002) — python-docx 본문 문단 + 표 [Pipeline].
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 이미지·도형은 제외하고 문단 텍스트와 표 셀 텍스트만 추출한다. 표는 행 단위로
 ``cell | cell`` 직렬화한다. 라이브러리는 지연 import 한다.
 """

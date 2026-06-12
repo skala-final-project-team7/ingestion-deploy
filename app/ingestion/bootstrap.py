@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : Worker·crawl 이 사용하는 외부 의존성(raw_store / 임베더 / Qdrant / cache / jobs /
           문서 분석기)을 ``Settings.use_real_adapters`` 토글에 따라 PoC(전부 Fake) 또는 실
           어댑터로 조립한다(config.py 의 use_real_adapters 패턴 재사용). 실 어댑터는 함수 내

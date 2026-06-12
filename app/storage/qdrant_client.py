@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : LINA RAG 파이프라인 Multi-Pool Vector Store(Qdrant) 어댑터. db-schema §1 의
           세 Pool(title/content/label)을 동일한 Named Vector 구조와 동일한 Payload
           스키마로 멱등 부트스트랩하고, Chunk + (dense, sparse) 벡터 쌍을 Named Vector

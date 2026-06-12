@@ -1,5 +1,8 @@
 """app.adapters — Document Source Adapter [Pipeline 경계].
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 RAG 파이프라인이 데이터 공급원에 직접 결합하지 않도록 하는 추상 인터페이스.
 공급원이 무엇이든 동일한 표준 PageObject 스트림을 반환하도록 강제하며,
 공급원 전환 시 어댑터 1개 클래스 + config의 source.type 1줄만 바뀐다.

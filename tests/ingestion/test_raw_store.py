@@ -1,5 +1,8 @@
 """FakeRawPageStore 단위 테스트 — get_page / get_attachment 읽기 경로 (featureI-3b).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 Mongo 경로는 인프라 의존이라 통합 환경에서 검증한다. 본 테스트는 외부 의존성 0 인
 FakeRawPageStore 의 멱등 적재 + 식별자 조회 계약만 검증한다(루트 CLAUDE.md 테스트 규칙).
 """

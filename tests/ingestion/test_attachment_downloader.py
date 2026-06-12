@@ -1,5 +1,8 @@
 """첨부 다운로더 + chunking_worker 배선 테스트 (FR-002 + 코드 리뷰 A11·A12).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 - Noop: 무변경(no-op).
 - Http: 이미 로컬(local_path)은 네트워크 없이 통과, 원격 download_url 은 fetch→local_path,
   영구 HTTP 오류(4xx)·재시도 소진은 AttachmentDownloadError.

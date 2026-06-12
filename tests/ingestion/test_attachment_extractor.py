@@ -1,5 +1,8 @@
 """첨부 텍스트 추출기 단위 테스트 (FR-002) — 유형별 추출 + graceful degrade.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 샘플 첨부는 in-test 로 생성한다(python-docx/openpyxl/PyMuPDF). 추출 라이브러리는 ingestion
 extras 에 포함되며, 미설치 환경에서는 해당 테스트를 skip 한다(코어 디스패치·실패 격리는 항상 검증).
 """

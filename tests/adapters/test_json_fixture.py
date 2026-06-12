@@ -1,5 +1,8 @@
 """JsonFixtureSourceAdapter 픽스처 로딩 회귀 — 부재 파일의 명확한 오류 표면화 (P1-6).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 종전에는 기본 설정의 ``POST /ml/ingest`` 가 픽스처 부재 시 원인 불명 ``FileNotFoundError``
 로 잡 FAILED 가 됐다. ``_iter_raw_pages`` 가 경로를 포함한 메시지로 즉시 실패하는지와,
 파일이 존재하면 기존대로 순회하는지를 검증한다(매핑 상세는 crawl/pipeline 테스트가 커버).

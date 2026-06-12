@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : Worker 가 큐(content.chunking 등) 메시지를 소비할 때 pika 에 직접 결합하지
           않도록 하는 얇은 consumer 추상화. ABC + Fake + Pika 3계층(`app/CLAUDE.md` §8).
           Worker 핵심 로직(메시지 1건 처리)은 consumer 와 분리해 단위 테스트한다.

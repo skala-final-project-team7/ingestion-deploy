@@ -1,5 +1,8 @@
 """AtlassianSourceAdapter 단위 테스트 — vendored Data Ingestion Agent 통합 경계 검증.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 vendored ``run_full_crawl_workflow`` 를 fake Confluence client 와 함께 실제로 구동해
 ProcessedDocument→PageObject 매핑·provider 부재 시 빈 ACL(fail-closed)·since 필터·
 list_active_ids 를 검증한다. Admin Key 경로(read restriction → allowed_groups/allowed_users)

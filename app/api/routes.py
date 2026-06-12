@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성, 이다연
+담당 영역 : ingestion
 작성목적 : api-spec v2.4.0 §2-2/§2-3/§2-4-2 의 수집(Data Ingestion) HTTP 계약을 제공한다.
           ``POST /ml/ingest`` 는 잡을 생성(``STARTED``)하고 백그라운드에서 crawl→chunk→
           upsert 를 실행하며, ``GET /ml/ingest/status/{jobId}`` 가 진행 상태·집계 카운트를,

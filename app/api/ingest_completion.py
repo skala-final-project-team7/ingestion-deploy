@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : api-spec v2.5.0 은 기존 BFF polling / ML→BFF HTTP revoke callback 흐름을 RabbitMQ
           completion event 로 대체한다. 수집 잡이 terminal(COMPLETED/FAILED) 상태에 도달하면
           ML/Data Ingestion 이 completion event 를 발행하고, BFF consumer 가 이를 consume 해
@@ -113,7 +114,7 @@ class QueueIngestCompletionPublisher:
     """``QueuePublisher`` 기반 completion event publisher."""
 
     publisher: QueuePublisher
-    routing_key: str = "ingestion.completed"
+    routing_key: str = "lina.admin.ingest.completion"
 
     def publish(self, event: IngestCompletionEvent) -> None:
         self.publisher.publish(routing_key=self.routing_key, message=event.to_payload())

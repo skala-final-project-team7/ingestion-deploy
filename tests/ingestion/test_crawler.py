@@ -1,5 +1,8 @@
 """run_full_crawl 단위 테스트 — 어댑터→raw_pages 적재→Chunking Queue 발행 흐름 검증.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 공급원 어댑터·raw_store·publisher 를 모두 fake 로 주입해 crawler 오케스트레이션만
 검증한다(외부 의존성 mock — 루트 CLAUDE.md 테스트 규칙).
 """

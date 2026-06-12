@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : 본문 doc_type 을 6유형(incident/operation/faq/meeting/adr/troubleshoot)으로
           판별하는 분석기. 스페이스 단위 1회 LLM(GPT-4o-mini, Function Calling) 호출 결과를
           MySQL `space_doc_type_cache` 에 캐싱하고, 이후 같은 스페이스 페이지는 캐시를

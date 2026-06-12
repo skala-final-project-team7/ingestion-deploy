@@ -1,5 +1,8 @@
 """스캐폴드 스모크 테스트.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 초기 구조가 import 가능하고 공유 스키마·신규 stub 의 계약이 살아있는지 확인한다.
 실행 전 의존성 설치 필요: ``pip install -e ".[ingestion,embedding,dev]"`` (Python 3.11).
 """

@@ -1,5 +1,8 @@
 """build_ingest_deps 운영 분기(배포 전 점검 fix, 2026-06-11) 회귀 테스트.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 종전 결함: ``use_real_adapters=True`` 에서도 run_crawl=run_poc_ingestion(전부 Fake store) /
 run_delta=변경 0건 / completion=Noop 으로 고정되어, 실 Confluence 크롤 결과가 인메모리
 fake 에 적재된 뒤 소멸했다(실 Qdrant 미적재 무음 결함). 본 테스트는 토글이 운영 wiring

@@ -1,9 +1,11 @@
 """수집 완료 이벤트 단위 테스트 (api-spec v2.5.0).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 - completion event payload 에 Confluence credential(accessToken/refreshToken/cloudId)이
   포함되지 않는지 검증한다.
-- payload 의 spec §2-2 정합(A9) — ``eventType``(INGEST_COMPLETED/INGEST_FAILED 분기) +
-  ``completedAt`` KST(+09:00) 표기를 검증한다.
+- payload 의 spec §2-2 정합(A9) — ``completedAt`` KST(+09:00) 표기를 검증한다.
 - ``QueueIngestCompletionPublisher`` 가 routing key + payload 를 ``QueuePublisher`` 에
   전달하는지 검증한다.
 - Noop publisher 와 publisher 실패 격리 + 제한 재시도(A10 — transient 실패 후 성공 시
@@ -36,7 +38,6 @@ def test_completion_event_payload_excludes_confluence_credentials() -> None:
     payload = event.to_payload()
 
     assert payload == {
-        "eventType": "INGEST_COMPLETED",
         "jobId": "job-1",
         "adminUserId": "712020:admin",
         "mode": "full",
@@ -51,21 +52,31 @@ def test_completion_event_payload_excludes_confluence_credentials() -> None:
     assert "cloudId" not in payload
 
 
-def test_completion_event_payload_event_type_follows_terminal_status() -> None:
-    """A9 — eventType 은 status 기반 분기: FAILED → INGEST_FAILED, 그 외 → INGEST_COMPLETED."""
-    completed = IngestCompletionEvent(job_id="job-1", mode="full", status=IngestJobStatus.COMPLETED)
+def test_completion_event_payload_follows_terminal_status() -> None:
+    """A9 — status 값이 완료/실패 일치 여부를 보존한다."""
+    completed = IngestCompletionEvent(
+        job_id="job-1",
+        admin_user_id="712020:admin",
+        mode="full",
+        status=IngestJobStatus.COMPLETED,
+    )
     failed = IngestCompletionEvent(
-        job_id="job-2", mode="delta", status=IngestJobStatus.FAILED, error_code="INGEST_FAILED"
+        job_id="job-2",
+        admin_user_id="712020:admin",
+        mode="delta",
+        status=IngestJobStatus.FAILED,
+        error_code="INGEST_FAILED",
     )
 
-    assert completed.to_payload()["eventType"] == "INGEST_COMPLETED"
-    assert failed.to_payload()["eventType"] == "INGEST_FAILED"
+    assert completed.to_payload()["status"] == "COMPLETED"
+    assert failed.to_payload()["status"] == "FAILED"
 
 
 def test_completion_event_payload_completed_at_is_kst_isoformat() -> None:
     """A9 — completedAt 은 spec §2-2 예시 표기(KST +09:00) ISO 8601 이다(naive 입력도 UTC 간주)."""
     explicit = IngestCompletionEvent(
         job_id="job-1",
+        admin_user_id="712020:admin",
         mode="full",
         status=IngestJobStatus.COMPLETED,
         completed_at=datetime(2026, 6, 5, 23, 30, 0, tzinfo=UTC),
@@ -75,6 +86,7 @@ def test_completion_event_payload_completed_at_is_kst_isoformat() -> None:
     # naive 입력은 UTC 로 간주된 뒤 KST 로 변환된다.
     naive = IngestCompletionEvent(
         job_id="job-naive",
+        admin_user_id="712020:admin",
         mode="full",
         status=IngestJobStatus.COMPLETED,
         completed_at=datetime(2026, 6, 5, 1, 2, 3),
@@ -82,13 +94,18 @@ def test_completion_event_payload_completed_at_is_kst_isoformat() -> None:
     assert naive.to_payload()["completedAt"] == "2026-06-05T10:02:03+09:00"
 
     # completed_at 미지정(now 폴백)도 항상 +09:00 오프셋으로 직렬화된다.
-    fallback = IngestCompletionEvent(job_id="job-2", mode="full", status=IngestJobStatus.COMPLETED)
+    fallback = IngestCompletionEvent(
+        job_id="job-2",
+        admin_user_id="712020:admin",
+        mode="full",
+        status=IngestJobStatus.COMPLETED,
+    )
     assert str(fallback.to_payload()["completedAt"]).endswith("+09:00")
 
 
 def test_queue_completion_publisher_uses_routing_key() -> None:
     queue = FakeQueuePublisher()
-    publisher = QueueIngestCompletionPublisher(queue, routing_key="ingestion.completed")
+    publisher = QueueIngestCompletionPublisher(queue, routing_key="lina.admin.ingest.completion")
 
     publisher.publish(
         IngestCompletionEvent(
@@ -104,8 +121,7 @@ def test_queue_completion_publisher_uses_routing_key() -> None:
 
     assert len(queue.messages) == 1
     published = queue.messages[0]
-    assert published.routing_key == "ingestion.completed"
-    assert published.body["eventType"] == "INGEST_FAILED"
+    assert published.routing_key == "lina.admin.ingest.completion"
     assert published.body["jobId"] == "job-1"
     assert published.body["adminUserId"] == "712020:admin"
     assert published.body["status"] == "FAILED"
@@ -119,6 +135,7 @@ def test_noop_completion_publisher_is_safe() -> None:
         NoopIngestCompletionPublisher(),
         IngestCompletionEvent(
             job_id="job-1",
+            admin_user_id="712020:admin",
             mode="full",
             status=IngestJobStatus.COMPLETED,
         ),
@@ -140,6 +157,7 @@ def test_publish_safely_swallows_publisher_errors() -> None:
         publisher,
         IngestCompletionEvent(
             job_id="job-1",
+            admin_user_id="712020:admin",
             mode="full",
             status=IngestJobStatus.COMPLETED,
         ),
@@ -164,7 +182,12 @@ def test_publish_safely_retries_transient_failure_then_succeeds() -> None:
             self.published.append(event)
 
     publisher = FlakyPublisher()
-    event = IngestCompletionEvent(job_id="job-1", mode="full", status=IngestJobStatus.COMPLETED)
+    event = IngestCompletionEvent(
+        job_id="job-1",
+        admin_user_id="712020:admin",
+        mode="full",
+        status=IngestJobStatus.COMPLETED,
+    )
 
     publish_ingest_completion_safely(publisher, event, retry_backoff_seconds=0)
 

@@ -1,5 +1,8 @@
 """app.ingestion.workers — RabbitMQ Worker (비동기 수집 파이프라인).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 사용자 요청 트래픽과 분리된 RabbitMQ 큐를 소비해 수집을 처리하고 EKS에서 독립 스케일링한다
 (요구사항정의서 §2.3, docs/architecture.md). 복사된 청킹/임베딩 자산(`app/ingestion/chunker`·
 `embedder`·`indexer.py`)을 Worker 경계에서 호출한다.

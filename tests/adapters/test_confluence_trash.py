@@ -1,5 +1,8 @@
 """Confluence Trash 소스 단위 테스트 (featureI-5b).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 parse_trashed_content(분류·graceful skip), ConfluenceTrashSource(_links.next 페이지네이션·
 누적·빈 space), ConfluenceTrashContentClient(URL 구성·인증 헤더)를 fake 로 검증한다.
 네트워크 호출은 없다(transport/client 주입).

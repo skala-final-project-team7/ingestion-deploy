@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : LINA RAG 파이프라인의 Dual Embedding 단계에서, 청크를 Pool별 임베딩 입력
           텍스트로 변환하고 embedding_cache 기반 재임베딩 멱등성을 판정한다
           (rag-pipeline-design.md §5, db-schema.md §1·§2.4, app/CLAUDE.md §4).

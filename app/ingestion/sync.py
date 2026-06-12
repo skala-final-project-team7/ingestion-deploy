@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : Delta Sync 가 감지하지 못하는 삭제된 페이지·첨부를 Qdrant 에서 제거하기
           위한 Reconciliation 함수. 설계서 §3.7 Phase 1 흐름 정합 ─ source.
           list_active_ids() 와 Qdrant 적재 ID 의 차집합을 ghost 로 산출해 cascade

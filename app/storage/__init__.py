@@ -1,5 +1,8 @@
 """app.storage — 외부 저장소(Qdrant·MongoDB·MySQL) 어댑터·클라이언트 패키지 [Storage].
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 분리 의도 (app/CLAUDE.md §8 — 외부 호출은 어댑터/클라이언트 계층으로 분리):
 
 - ``qdrant_client.py`` — ``QdrantPoolStore``. db-schema.md §1의 Multi-Pool Vector

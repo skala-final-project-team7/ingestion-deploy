@@ -1,5 +1,8 @@
 """문서 분석기 [Agent] 단위 테스트 — doc_type 판별·캐싱·폴백 + Worker 연동.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 LLM(OpenAI)·MySQL 은 Fake 로 대체한다(FakeDocTypeClassifier / FakeSpaceDocTypeCache).
 스페이스 단위 1회 판별(캐시 히트 시 LLM 재호출 없음)·저신뢰/예외 폴백·Worker 가 resolver
 doc_type 으로 청킹하는지를 검증한다.

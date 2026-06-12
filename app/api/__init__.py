@@ -1,5 +1,8 @@
 """app.api — Data Ingestion Pipeline FastAPI 앱 및 라우트.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 수집 파이프라인을 BFF 에 노출하는 HTTP 계층. API 계약은 api-spec v2.5.0
 §2-2/§2-3/§2-4-2(+ 수집 완료 RabbitMQ completion event).
 
