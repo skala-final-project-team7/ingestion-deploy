@@ -305,9 +305,10 @@ def build_soft_delete_store(settings: Settings | None = None) -> SoftDeleteStore
 def open_rabbitmq_channel(settings: Settings | None = None) -> tuple[Any, Any]:
     """RabbitMQ BlockingConnection + channel 을 연다(호출자가 connection.close() 책임).
 
-    발행 대상 큐(``content.chunking`` / completion 라우팅 키)를 durable 로 선언해
-    consumer(워커/BFF)가 늦게 떠도 메시지가 유실되지 않게 한다(멱등 — 이미 있으면 no-op).
-    publisher 는 default exchange 를 쓰므로 routing_key == queue 이름이다.
+    발행 대상 큐(``content.chunking`` / completion queue / ingest job queue)를 durable 로
+    선언해 consumer(워커/BFF)가 늦게 떠도 메시지가 유실되지 않게 한다(멱등 — 이미 있으면
+    no-op). ingest job은 BFF가 ``lina.admin.ingest`` exchange 의 ``admin.ingest.requested``
+    라우팅으로 발행하므로 exchange/queue 바인딩을 선언한다.
 
     Returns:
         ``(connection, channel)`` 튜플.
@@ -320,7 +321,19 @@ def open_rabbitmq_channel(settings: Settings | None = None) -> tuple[Any, Any]:
     connection = pika.BlockingConnection(pika.URLParameters(resolved.rabbitmq_url))
     channel = connection.channel()
     channel.queue_declare(queue=QUEUE_CHUNKING, durable=True)
-    channel.queue_declare(queue=resolved.ingest_completion_routing_key, durable=True)
+    channel.queue_declare(queue=resolved.ingest_completion_queue, durable=True)
+    channel.queue_declare(queue=resolved.ingest_completion_dlq, durable=True)
+    channel.exchange_declare(
+        exchange=resolved.ingest_job_exchange,
+        exchange_type="direct",
+        durable=True,
+    )
+    channel.queue_declare(queue=resolved.ingest_job_queue, durable=True)
+    channel.queue_bind(
+        exchange=resolved.ingest_job_exchange,
+        queue=resolved.ingest_job_queue,
+        routing_key=resolved.ingest_job_routing_key,
+    )
     return connection, channel
 
 

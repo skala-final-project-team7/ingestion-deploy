@@ -17,9 +17,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from datetime import UTC, datetime
 import logging
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
 from app.api.deps import IngestDeps
 from app.api.ingest_completion import IngestCompletionEvent, publish_ingest_completion_safely
@@ -30,6 +31,66 @@ from app.schemas.enums import IngestJobStatus
 _LOGGER = logging.getLogger(__name__)
 
 CredentialLookup = Callable[[str], tuple[str | None, str | None]]
+
+
+@dataclass(frozen=True, slots=True)
+class IngestJobCommand:
+    """BFF가 RabbitMQ로 발행한 수집 job 계약."""
+
+    job_id: str
+    admin_user_id: str
+    mode: str
+    requested_at: datetime
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> "IngestJobCommand":
+        """필수 필드(``jobId, adminUserId, mode, requestedAt``)를 검증해 파싱한다."""
+        missing = {"jobId", "adminUserId", "mode", "requestedAt"} - set(payload.keys())
+        if missing:
+            raise ValueError(f"invalid ingest job payload: missing {sorted(missing)}")
+
+        job_id = str(payload["jobId"]).strip() if isinstance(payload["jobId"], str) else ""
+        admin_user_id = (
+            str(payload["adminUserId"]).strip()
+            if isinstance(payload["adminUserId"], str)
+            else ""
+        )
+        mode = str(payload["mode"]).strip()
+        if not job_id:
+            raise ValueError("jobId is required")
+        if mode not in {"full", "delta"}:
+            raise ValueError(f"invalid mode={mode!r}; expected full|delta")
+        if not admin_user_id:
+            raise ValueError("adminUserId is required")
+
+        raw_requested_at = payload["requestedAt"]
+        if isinstance(raw_requested_at, datetime):
+            requested_at = raw_requested_at
+        elif isinstance(raw_requested_at, str):
+            requested_at = _parse_requested_at(raw_requested_at)
+        else:
+            raise ValueError("requestedAt is required and must be ISO-8601 string")
+        if requested_at.tzinfo is None:
+            requested_at = requested_at.replace(tzinfo=UTC)
+
+        return cls(
+            job_id=job_id,
+            admin_user_id=admin_user_id,
+            mode=mode,
+            requested_at=requested_at,
+        )
+
+
+def _parse_requested_at(requested_at: str) -> datetime:
+    """BFF 계약의 ISO-8601 ``requestedAt`` 값을 파싱한다(naive 인입은 UTC로 해석)."""
+    normalized = requested_at.strip().replace("Z", "+00:00")
+    if not normalized:
+        raise ValueError("requestedAt is required and must be ISO-8601 string")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError("requestedAt must be ISO-8601 string") from exc
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _resolve_runtime_credentials(
@@ -125,6 +186,36 @@ def _publish_failed_completion(
         error_code="INGEST_FAILED",
         error=str(error),
         finished_at=finished_at,
+    )
+
+
+def run_ingest_job_from_payload(
+    deps: IngestDeps,
+    payload: Mapping[str, object],
+    *,
+    credential_lookup: CredentialLookup | None = None,
+) -> None:
+    """RabbitMQ ``admin.ingest.requested`` 메시지를 파싱해 full/delta ingest 를 실행한다."""
+    command = IngestJobCommand.from_payload(payload)
+    credential_lookup_callable = credential_lookup or getattr(deps, "credential_lookup", None)
+    if command.mode == "delta":
+        run_delta_ingest_job(
+            deps,
+            job_id=command.job_id,
+            delta_request=DeltaSyncRequest(
+                previous_snapshot_path=deps.previous_snapshot_path,
+                admin_user_id=command.admin_user_id,
+            ),
+            credential_lookup=credential_lookup_callable if callable(credential_lookup_callable) else None,
+        )
+        return
+
+    run_ingest_job(
+        deps,
+        job_id=command.job_id,
+        mode=command.mode,
+        crawl_request=CrawlRequest(admin_user_id=command.admin_user_id),
+        credential_lookup=credential_lookup_callable if callable(credential_lookup_callable) else None,
     )
 
 

@@ -88,6 +88,47 @@
 
 - Step 9 통합 테스트는 미진행.
 
+## 2026-06-11 — featureI-7c Step 9 진행: completion 큐 통합 경로 검증
+
+**작업**: `tests/integration/` 통합 테스트를 추가해 실제 RabbitMQ completion 큐 적재/consume 경로 검증.
+
+**변경 범위**
+
+- `tests/integration/test_completion_queue_integration.py`(신규)
+  - `Testcontainers` 가능 시 `RabbitMqContainer`로 RabbitMQ 기동 후 completion queue를 선언하고
+    `QueueIngestCompletionPublisher`로 이벤트를 적재.
+  - `basic_get` consume로 메시지 수신을 확인하고, 메시지 속성(`delivery_mode`, `content_type`) 및
+    payload(`status/eventType`, jobId, 민감 필드 미포함)를 검증.
+  - `COMPLETED`, `FAILED` 2종 상태를 연속 publish/consume.
+
+**검증**
+
+- `python3 -m pytest tests/integration/test_completion_queue_integration.py`
+  실행 시 pytest는 확인되었고, `testcontainers` 설치 후에도 현재 환경은 Docker 소켓 권한(`Operation not
+  permitted`)으로 컨테이너 시작이 불가해 통합 실행은 실패(실패 처리)했습니다.
+- 점검 중 통합 테스트 내부 검증 문자열을 실제 메시지 값(`test integration failure`) 기준으로
+  `ingest failure` → `test integration failure`로 수정했습니다.
+- 변경된 통합 테스트는 Docker 권한/도커 접근 가능한 환경에서 재실행 시 실제 completion queue 적재
+  경로 검증이 가능합니다.
+
+**남은 리스크/후속**
+
+- Testcontainers/도커/RabbitMQ 환경이 없는 경우 이 테스트는 실행 시 스킵됨.
+
+## 2026-06-11 — Step 9 보강: 통합 테스트 검증 오류 보정
+
+**작업**: Step 9 통합 테스트의 값 검증 실패 가능성을 제거.
+
+**변경 범위**
+
+- `tests/integration/test_completion_queue_integration.py`
+  - FAILED payload message 검증 어서션을 `"test integration failure"`로 정합.
+
+**검증**
+
+- 실제 메시지 본문(`message="test integration failure"`) 기준으로 어서션을 맞춰 재확인.
+- 실행은 동일 Docker 소켓 권한 제약으로 통합 컨테이너 구동 단계에서 재확인 필요.
+
 ## 2026-06-11 — Codex 작업 지침 표면 추가
 
 **작업**: 기존 Claude Code 중심 문서 체계를 Codex에서도 바로 사용할 수 있도록 `AGENTS.md` 계층을

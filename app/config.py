@@ -156,6 +156,12 @@ class Settings(BaseSettings):
     ingest_completion_queue: str = "lina.admin.ingest.completion"
     ingest_completion_dlq: str = "lina.admin.ingest.completion.dlq"
 
+    # --- 수집 작업 큐 (BFF ingest job consume 경로) ---
+    # BFF는 exchange/routing 으로 publish 하므로 Data Ingestion Pipeline 이 소유/선언.
+    ingest_job_exchange: str = "lina.admin.ingest"
+    ingest_job_routing_key: str = "admin.ingest.requested"
+    ingest_job_queue: str = "lina.data-ingestion.ingest"
+
     # --- Delta Sync (FR-005) ---
     # mode=delta 가 vendored Data Sync Agent(run_delta_sync)로 직전 수집 스냅샷과 변경분을 비교할 때
     # 사용하는 이전 스냅샷 파일 경로. 운영에서는 raw store/스냅샷 repository 로 교체될 수 있으나
