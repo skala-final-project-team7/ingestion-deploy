@@ -1,8 +1,9 @@
-# CLAUDE.md
+# AGENTS.md
 
-이 문서는 Claude Code가 **Data Ingestion Pipeline** 저장소에서 따라야 하는 최상위 공통 규칙을 정의한다.
-Codex는 같은 정책을 정리한 `AGENTS.md`를 우선 확인한다. 두 문서는 같은 저장소 규칙을 공유하므로
-규칙 변경 시 함께 갱신한다.
+이 문서는 Codex가 **Data Ingestion Pipeline** 저장소에서 따라야 하는 최상위 공통 규칙을 정의한다.
+기존 Claude Code용 `CLAUDE.md`와 같은 정책을 Codex가 바로 읽을 수 있도록 정리한 진입점이다.
+Claude Code를 계속 사용하는 경우 `CLAUDE.md`도 함께 유지한다.
+
 RAG Pipeline 저장소(`../rag`)와 분리된 독립 배포 단위이며, 공통 모델(`app/schemas`)·청킹·임베딩
 자산은 RAG 레포에서 복사해온 것이다(2026-05-26 분리). 공통 자산 변경 시 RAG 레포와의 정합에 유의한다.
 
@@ -13,7 +14,7 @@ RAG Pipeline 저장소(`../rag`)와 분리된 독립 배포 단위이며, 공통
 - 사용자가 요청하지 않은 대규모 리팩토링을 하지 않는다.
 - 담당 범위를 벗어난 파일은 수정하지 않는다.
 - Confluence 수집 계약, RabbitMQ 큐/라우팅 키, DB Schema, ACL 적재 흐름을 변경할 경우 관련 문서를 함께 수정한다.
-- Secret, Token, Credential, `.env` 파일을 생성하거나 커밋하지 않는다. **특히 Confluence OAuth access token은 로그·메시지 페이로드에 남기지 않는다(요구사항정의서 §6.1 보안).**
+- Secret, Token, Credential, `.env` 파일을 생성하거나 커밋하지 않는다. 특히 Confluence OAuth access token은 로그·메시지 페이로드에 남기지 않는다.
 - 테스트 실패 상태로 작업을 완료했다고 보고하지 않는다.
 - 임시 코드, 우회 코드, 불필요한 TODO, 디버깅용 로그를 남기지 않는다.
 - 기존 아키텍처 의존 방향을 임의로 바꾸지 않는다.
@@ -26,9 +27,9 @@ RAG Pipeline 저장소(`../rag`)와 분리된 독립 배포 단위이며, 공통
 
 작업 전 아래 문서를 확인한다.
 
-- Data Ingestion Pipeline app/ 전용 규칙: `app/CLAUDE.md`
-- Codex용 저장소 규칙: `AGENTS.md`, `app/AGENTS.md`
-- Claude Code 작업 플로우: `docs/ai/workflow.md`
+- Data Ingestion Pipeline app/ 전용 Codex 규칙: `app/AGENTS.md`
+- 기존 Claude Code 규칙 원본: `CLAUDE.md`, `app/CLAUDE.md`
+- AI coding agent 작업 플로우: `docs/ai/workflow.md`
 - 팀 공통 프롬프트 템플릿: `docs/ai/prompt-templates.md`
 - 아키텍처 문서: `docs/architecture.md`
 - 시스템 설계서(수집 §3 / 임베딩 §5 / 스키마 §7): `docs/rag-pipeline-design.md`
@@ -38,18 +39,19 @@ RAG Pipeline 저장소(`../rag`)와 분리된 독립 배포 단위이며, 공통
 - DB 스키마: `docs/db-schema.md`
 - ACL 접두 규약(ADR): `docs/adr/0002-acl-prefix-convention.md`
 - 현재 작업 Plan: `docs/ai/current-plan.md`
+- 작업 로그: `docs/ai/working-log.md`
 
-> 요구사항 원본(FR-001 수집 / FR-002 첨부 텍스트 추출 / FR-003 청킹 / FR-004 임베딩 색인)은
-> 외부 `요구사항정의서`를 기준으로 한다. 수집·동기화 계약 변경 시 `docs/architecture.md`·
-> `docs/db-schema.md`를 함께 갱신한다.
+요구사항 원본(FR-001 수집 / FR-002 첨부 텍스트 추출 / FR-003 청킹 / FR-004 임베딩 색인)은
+외부 `요구사항정의서`를 기준으로 한다. 수집·동기화 계약 변경 시 `docs/architecture.md`·
+`docs/db-schema.md`를 함께 갱신한다.
 
 ---
 
 ## 작업 시작 규칙
 
 - 작업 전 반드시 작업 목표와 담당 영역을 확인한다.
-- 구현 전 Plan을 먼저 작성한다(`docs/ai/current-plan.md`).
-- Plan에는 다음을 포함한다: 작업 목표 / 수정 대상 파일 / 수정하지 않을 파일 / 예상 영향 범위 / 테스트 방법 / 완료 기준 / 문서 수정 필요 여부.
+- 구현 전 Plan을 먼저 작성하거나, 기존 `docs/ai/current-plan.md`의 해당 feature를 확인한다.
+- Plan에는 작업 목표 / 수정 대상 파일 / 수정하지 않을 파일 / 예상 영향 범위 / 테스트 방법 / 완료 기준 / 문서 수정 필요 여부를 포함한다.
 - 작업 범위가 커지면 기능을 작은 단위(feature)로 나눈다.
 - 불확실한 부분은 기존 코드, 문서, 테스트를 먼저 확인한다.
 
@@ -138,36 +140,19 @@ RAG Pipeline 저장소(`../rag`)와 분리된 독립 배포 단위이며, 공통
 
 ## Git 커밋·푸시 규칙
 
-> 이 레포(`ingestion`)와 `../rag`는 **독립된 git 저장소(형제 관계)** 다. 커밋·푸시는 **각 레포에서
-> 따로** 수행한다. 한 작업이 두 레포를 모두 건드리면, 같은 change-set를 각 레포에서 개별 브랜치·
-> 개별 커밋·개별 푸시로 처리한다(한쪽 커밋이 다른 쪽을 포함하지 않는다).
+이 레포(`ingestion`)와 `../rag`는 독립된 git 저장소(형제 관계)다. 커밋·푸시는 각 레포에서 따로
+수행한다. 한 작업이 두 레포를 모두 건드리면, 같은 change-set를 각 레포에서 개별 브랜치·개별 커밋·
+개별 푸시로 처리한다.
 
-- **커밋·푸시는 사용자가 수행한다.** Claude는 브랜치명·커밋 메시지 **초안만 제안**하고, `git commit`/
+- 커밋·푸시는 사용자가 수행한다. Codex는 브랜치명·커밋 메시지 초안만 제안하고, `git commit`/
   `git push`를 임의로 실행하지 않는다.
-- **브랜치 분리**: change-set마다 전용 브랜치를 만든다. 형식 `<type>/#<이슈번호>/<기능-이름>`
-  (`type` = `feat` / `fix` / `docs` / `refactor`). 다른 작업 브랜치 위에 새 change-set를 쌓지 않는다.
-- **커밋 전 검증**: `./scripts/verify.sh`(format → lint → test)를 통과시킨다. 문서만 변경한
-  change-set도 실행해 무영향을 확인한다. 실패 시 원인·해결 여부를 작업 결과에 기록한다.
-- **스테이징 확인**: `git add -A` 전에 `git status --short`로 의도한 파일만 변경됐는지 확인한다
-  (`git diff`로 의도하지 않은 변경이 없는지도 본다).
-- **비밀정보 금지**: 토큰·자격증명·`.env`가 스테이징/커밋에 포함되지 않았는지 확인한다(절대 규칙).
-- **공유 자산 변경 동기화**: `app/schemas`·`app/ingestion/{chunker,embedder,...}`·`app/adapters`·
-  `app/storage` 등 `../rag`와 공유하는 자산을 바꾸면, 같은 change-set로 양 레포를 동일하게 갱신하고
-  ADR로 기록한다(소유권·동기화 절차는 `docs/adr/0003-ingestion-rag-shared-contracts.md` 항목 2 참조).
-- **커밋 메시지**: 제목 한 줄(`<type>(<scope>): <요약>`) + 빈 줄 + 본문 bullet(무엇을·왜). 예시는 아래.
-
-```bash
-# 예시 — change-set 단위 (이 레포에서 단독 수행)
-git checkout -b feat/#<이슈번호>/<기능-이름>
-./scripts/verify.sh                 # format → lint → test 통과
-git status --short                  # 의도한 파일만 확인
-git add -A
-git commit -m "feat(ingestion): <요약>
-
-- <무엇을 했는지>
-- <왜 / 영향>"
-git push --set-upstream origin feat/#<이슈번호>/<기능-이름>
-```
+- 브랜치 분리: change-set마다 전용 브랜치를 만든다. 형식 `<type>/#<이슈번호>/<기능-이름>`
+  (`type` = `feat` / `fix` / `docs` / `refactor`).
+- 커밋 전 검증: `./scripts/verify.sh`(format → lint → test)를 통과시킨다. 문서만 변경한 change-set도
+  실행해 무영향을 확인한다.
+- 스테이징 전 `git status --short`와 `git diff`로 의도한 파일만 변경됐는지 확인한다.
+- 토큰·자격증명·`.env`가 스테이징/커밋에 포함되지 않았는지 확인한다.
+- 공유 자산을 바꾸면 같은 change-set로 양 레포를 동일하게 갱신하고 ADR로 기록한다.
 
 ---
 

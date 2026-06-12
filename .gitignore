@@ -35,3 +35,5 @@ htmlcov/
 # 평가 산출물 / backfill 백업
 reports/
 *.bak
+
+.venv311/

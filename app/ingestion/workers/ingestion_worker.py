@@ -1,0 +1,371 @@
+"""Ingestion Worker — 수집 job consume 및 completion publish 처리 [Worker 경계].
+
+--------------------------------------------------
+작성자 : 이다연
+작성목적 : ``/ml/ingest`` API 또는 향후 RabbitMQ ingest 큐 consumer 가 공통적으로 재사용할
+          수집 종료(COMPLETED/FAILED) 처리 경로를 한 곳에 정리한다. 수집 수명주기를
+          terminal 상태로 마감하고, 완료 이벤트를 안전하게 발행해 BFF Admin Key deactivate
+          트리거를 보장한다.
+변경사항 내역 (날짜, 변경목적, 변경내용 순)
+  - 2026-06-11, featureI-7c — success/failed publish 분기를 이 파일에 정규화.
+  - 2026-06-11, featureI-7c Step 4 — 실패 경로에서 completion 이벤트 강제 보장.
+    수집/Delta 실패 시 `FAILED` 발행을 상태 저장 실패와 분리해 `publish 실패`만 제외하고 보장하도록
+    `_publish_failed_completion` 경로를 추가. `run_delta_ingest_job`는 삭제 반영 예외도 이 경로로 수렴해
+    BFF deactivate 트리거가 중단되지 않도록 정합화.
+--------------------------------------------------
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
+from app.api.deps import IngestDeps
+from app.api.ingest_completion import IngestCompletionEvent, publish_ingest_completion_safely
+from app.ingestion.crawler import CrawlRequest
+from app.ingestion.sync import DeltaSyncRequest
+from app.schemas.enums import IngestJobStatus
+
+_LOGGER = logging.getLogger(__name__)
+
+CredentialLookup = Callable[[str], tuple[str | None, str | None]]
+
+
+@dataclass(frozen=True, slots=True)
+class IngestJobCommand:
+    """BFF가 RabbitMQ로 발행한 수집 job 계약."""
+
+    job_id: str
+    admin_user_id: str
+    mode: str
+    requested_at: datetime
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, object]) -> "IngestJobCommand":
+        """필수 필드(``jobId, adminUserId, mode, requestedAt``)를 검증해 파싱한다."""
+        missing = {"jobId", "adminUserId", "mode", "requestedAt"} - set(payload.keys())
+        if missing:
+            raise ValueError(f"invalid ingest job payload: missing {sorted(missing)}")
+
+        job_id = str(payload["jobId"]).strip() if isinstance(payload["jobId"], str) else ""
+        admin_user_id = (
+            str(payload["adminUserId"]).strip()
+            if isinstance(payload["adminUserId"], str)
+            else ""
+        )
+        mode = str(payload["mode"]).strip()
+        if not job_id:
+            raise ValueError("jobId is required")
+        if mode not in {"full", "delta"}:
+            raise ValueError(f"invalid mode={mode!r}; expected full|delta")
+        if not admin_user_id:
+            raise ValueError("adminUserId is required")
+
+        raw_requested_at = payload["requestedAt"]
+        if isinstance(raw_requested_at, datetime):
+            requested_at = raw_requested_at
+        elif isinstance(raw_requested_at, str):
+            requested_at = _parse_requested_at(raw_requested_at)
+        else:
+            raise ValueError("requestedAt is required and must be ISO-8601 string")
+        if requested_at.tzinfo is None:
+            requested_at = requested_at.replace(tzinfo=UTC)
+
+        return cls(
+            job_id=job_id,
+            admin_user_id=admin_user_id,
+            mode=mode,
+            requested_at=requested_at,
+        )
+
+
+def _parse_requested_at(requested_at: str) -> datetime:
+    """BFF 계약의 ISO-8601 ``requestedAt`` 값을 파싱한다(naive 인입은 UTC로 해석)."""
+    normalized = requested_at.strip().replace("Z", "+00:00")
+    if not normalized:
+        raise ValueError("requestedAt is required and must be ISO-8601 string")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise ValueError("requestedAt must be ISO-8601 string") from exc
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _resolve_runtime_credentials(
+    admin_user_id: str | None,
+    *,
+    access_token: str | None,
+    cloud_id: str | None,
+    credential_lookup: CredentialLookup | None,
+) -> tuple[str | None, str | None]:
+    """adminUserId 기반 credential 조회를 우선 시도한다.
+
+    credential lookup 실패/미설정 시에도 수집 플로우가 멈추지 않도록 request 필드를
+    fallback 사용한다. 즉, 이 단계에서는 수집 요청 경로(`run_ingest`/`run_delta`)가
+    전달한 token 정보를 우선 보존한다.
+
+    현재 단계에서는 auth-server 미구현 구간이 존재하므로, 조회 실패 시 예외를 전파하지 않고
+    기존 credential(또는 None)을 그대로 사용한다.
+    """
+    if credential_lookup is None or not admin_user_id:
+        return access_token, cloud_id
+
+    try:
+        resolved_access_token, resolved_cloud_id = credential_lookup(admin_user_id)
+    except Exception:
+        _LOGGER.exception("admin credential lookup failed: admin_user_id=%s", admin_user_id)
+        return access_token, cloud_id
+
+    return resolved_access_token or access_token, resolved_cloud_id or cloud_id
+
+
+def publish_ingest_completion(
+    deps: IngestDeps,
+    *,
+    job_id: str,
+    mode: str,
+    status: IngestJobStatus,
+    admin_user_id: str | None,
+    finished_at: datetime,
+    error_code: str | None = None,
+    error: str | None = None,
+) -> None:
+    """terminal 수집 종료 상태를 completion 이벤트로 publish한다.
+
+    별도 예외 처리 없이 publish seam 에 위임한다.
+    이벤트 payload 구성은 DTO에서 필드 허용/제한 정책(민감정보 제외)을 보장한다.
+    """
+    publish_ingest_completion_safely(
+        deps.completion_publisher,
+        IngestCompletionEvent(
+            job_id=job_id,
+            mode=mode,
+            status=status,
+            admin_user_id=admin_user_id,
+            error_code=error_code,
+            message=error,
+            completed_at=finished_at,
+        ),
+    )
+
+
+def _publish_failed_completion(
+    deps: IngestDeps,
+    *,
+    job_id: str,
+    mode: str,
+    admin_user_id: str | None,
+    error: Exception,
+) -> None:
+    """실패 잡 종료 경로에서 completion 이벤트를 보장 발행한다.
+
+    구현 포인트:
+    - `job_store.update`가 실패해도(디스크/네트워크/락 경합) 잡 상태 기록 실패로
+      completion publish 가 누락되지 않도록 먼저 고립 처리.
+    - publish 본체는 `publish_ingest_completion_safely`를 통해 재시도/예외 흡수를 수행한다.
+    """
+    finished_at = datetime.now(UTC)
+    try:
+        deps.job_store.update(
+            job_id,
+            status=IngestJobStatus.FAILED,
+            finished_at=finished_at,
+            error=str(error),
+        )
+    except Exception:  # noqa: BLE001 — 상태 영속화 실패는 이벤트 발행 자체를 막지 않음
+        _LOGGER.exception("failed job state persistence failed: job_id=%s", job_id)
+
+    publish_ingest_completion(
+        deps,
+        job_id=job_id,
+        mode=mode,
+        status=IngestJobStatus.FAILED,
+        admin_user_id=admin_user_id,
+        error_code="INGEST_FAILED",
+        error=str(error),
+        finished_at=finished_at,
+    )
+
+
+def run_ingest_job_from_payload(
+    deps: IngestDeps,
+    payload: Mapping[str, object],
+    *,
+    credential_lookup: CredentialLookup | None = None,
+) -> None:
+    """RabbitMQ ``admin.ingest.requested`` 메시지를 파싱해 full/delta ingest 를 실행한다."""
+    command = IngestJobCommand.from_payload(payload)
+    credential_lookup_callable = credential_lookup or getattr(deps, "credential_lookup", None)
+    if command.mode == "delta":
+        run_delta_ingest_job(
+            deps,
+            job_id=command.job_id,
+            delta_request=DeltaSyncRequest(
+                previous_snapshot_path=deps.previous_snapshot_path,
+                admin_user_id=command.admin_user_id,
+            ),
+            credential_lookup=credential_lookup_callable if callable(credential_lookup_callable) else None,
+        )
+        return
+
+    run_ingest_job(
+        deps,
+        job_id=command.job_id,
+        mode=command.mode,
+        crawl_request=CrawlRequest(admin_user_id=command.admin_user_id),
+        credential_lookup=credential_lookup_callable if callable(credential_lookup_callable) else None,
+    )
+
+
+def run_ingest_job(
+    deps: IngestDeps,
+    job_id: str,
+    mode: str,
+    crawl_request: CrawlRequest,
+    *,
+    credential_lookup: CredentialLookup | None = None,
+) -> None:
+    """수집 잡을 실행하고 terminal 상태(COMPLETED/FAILED)로 정리한다.
+
+    실패 시 `_publish_failed_completion`를 호출해 BFF deactivate 트리거용 FAILED 이벤트를
+    먼저 보장한다.
+    """
+    deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
+
+    access_token, cloud_id = _resolve_runtime_credentials(
+        crawl_request.admin_user_id,
+        access_token=crawl_request.access_token,
+        cloud_id=crawl_request.cloud_id,
+        credential_lookup=credential_lookup,
+    )
+
+    request = CrawlRequest(
+        space_key=crawl_request.space_key,
+        admin_user_id=crawl_request.admin_user_id,
+        access_token=access_token,
+        cloud_id=cloud_id,
+    )
+
+    try:
+        result = deps.run_crawl(request)
+    except Exception as exc:  # noqa: BLE001 — 잡 단위 예외 격리
+        _LOGGER.exception("ingest job failed: job_id=%s", job_id)
+        _publish_failed_completion(
+            deps,
+            job_id=job_id,
+            mode=mode,
+            admin_user_id=crawl_request.admin_user_id,
+            error=exc,
+        )
+        return
+
+    finished_at = datetime.now(UTC)
+    failed = len(result.failed_page_ids)
+    deps.job_store.update(
+        job_id,
+        status=IngestJobStatus.COMPLETED,
+        total_pages=result.pages_collected + failed,
+        processed_pages=result.pages_collected,
+        failed_pages=failed,
+        finished_at=finished_at,
+    )
+    publish_ingest_completion(
+        deps,
+        job_id=job_id,
+        mode=mode,
+        status=IngestJobStatus.COMPLETED,
+        admin_user_id=crawl_request.admin_user_id,
+        finished_at=finished_at,
+    )
+
+
+def run_delta_ingest_job(
+    deps: IngestDeps,
+    job_id: str,
+    delta_request: DeltaSyncRequest,
+    *,
+    credential_lookup: CredentialLookup | None = None,
+) -> None:
+    """Delta Sync 잡을 실행하고 terminal 상태(COMPLETED/FAILED)로 정리한다.
+
+    실패 시 `_publish_failed_completion`로 빠르게 FAILED 이벤트로 수렴하고,
+    delta 삭제 반영 단계(`apply_delta_deletions`) 예외도 동일 경로로 연결해
+    수집 실패라도 deactivate 경로가 누락되지 않게 한다.
+    """
+    deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
+
+    access_token, cloud_id = _resolve_runtime_credentials(
+        delta_request.admin_user_id,
+        access_token=delta_request.access_token,
+        cloud_id=delta_request.cloud_id,
+        credential_lookup=credential_lookup,
+    )
+
+    request = DeltaSyncRequest(
+        previous_snapshot_path=delta_request.previous_snapshot_path,
+        access_token=access_token,
+        cloud_id=cloud_id,
+        admin_user_id=delta_request.admin_user_id,
+    )
+
+    try:
+        result = deps.run_delta(request)
+    except Exception as exc:  # noqa: BLE001 — 잡 단위 예외 격리
+        _LOGGER.exception("delta ingest job failed: job_id=%s", job_id)
+        _publish_failed_completion(
+            deps,
+            job_id=job_id,
+            mode="delta",
+            admin_user_id=delta_request.admin_user_id,
+            error=exc,
+        )
+        return
+
+    finished_at = datetime.now(UTC)
+    try:
+        delete_result = deps.sync_worker.apply_delta_deletions(
+            result, confirm=deps.delta_delete_confirm
+        )
+    except Exception as exc:  # noqa: BLE001 — 삭제 게이트 실패도 terminal failed 로 전환
+        _LOGGER.exception("delta delete apply failed: job_id=%s", job_id)
+        _publish_failed_completion(
+            deps,
+            job_id=job_id,
+            mode="delta",
+            admin_user_id=delta_request.admin_user_id,
+            error=exc,
+        )
+        return
+
+    if delete_result.has_failures:
+        _LOGGER.warning(
+            "delta soft-delete partial failure: job_id=%s deleted=%d failed_pages=%d",
+            job_id,
+            delete_result.total_soft_deleted,
+            len(delete_result.failed_page_ids),
+        )
+    elif delete_result.total_soft_deleted:
+        _LOGGER.info(
+            "delta soft-delete applied: job_id=%s deleted=%d",
+            job_id,
+            delete_result.total_soft_deleted,
+        )
+
+    deps.job_store.update(
+        job_id,
+        status=IngestJobStatus.COMPLETED,
+        total_pages=result.changed_pages + result.failed_items,
+        processed_pages=result.changed_pages,
+        failed_pages=result.failed_items,
+        finished_at=finished_at,
+    )
+    publish_ingest_completion(
+        deps,
+        job_id=job_id,
+        mode="delta",
+        status=IngestJobStatus.COMPLETED,
+        admin_user_id=delta_request.admin_user_id,
+        finished_at=finished_at,
+    )

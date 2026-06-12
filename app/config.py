@@ -1,7 +1,7 @@
 """애플리케이션 환경 설정.
 
 --------------------------------------------------
-작성자 : 최태성
+작성자 : 최태성, 이다연
 담당 영역 : ingestion
 작성목적 : 데이터 공급원·Qdrant·MongoDB·MySQL·OpenAI·모델명 등 환경 의존 설정을
           환경 변수(RAG_ 프리픽스) 또는 .env 파일에서 주입받는다. 시크릿은
@@ -16,6 +16,7 @@
     분기로 E5 + BM25 + Qdrant from_settings + CrossEncoderRerankerImpl을 부트스트랩
   - 2026-06-09, api-spec v2.5.0 정합 — ingest_completion_routing_key 추가(수집 완료 이벤트
     RabbitMQ 라우팅 키). credential 미포함 payload 계약.
+  - 2026-06-11, featureI-7c Step6 — completion queue/routing/DLQ 기본값 정비.
   - 2026-06-10, 코드 리뷰 재점검(A2) — atlassian_empty_restriction_policy 기본값을
     allow_authenticated → **mark_missing**(fail-closed)으로 변경. 상속 제한 문서
     과다 노출 방지(ancestor restriction 조회 구현 전까지 allow_authenticated 는 opt-in).
@@ -148,9 +149,19 @@ class Settings(BaseSettings):
     # 수집 잡이 terminal(COMPLETED/FAILED) 상태에 도달하면 ML/Data Ingestion 이 RabbitMQ
     # completion event 를 발행한다. BFF consumer 가 이를 consume 해 auth-server 의 Admin Key
     # deactivate 내부 API 를 호출한다(ML 은 Admin Key 를 직접 말소하지 않음 — 책임 분리).
-    # payload 에는 jobId/adminUserId/mode/status 만 담고 accessToken/refreshToken/cloudId 같은
-    # credential set 은 절대 포함하지 않는다(루트 CLAUDE.md 보안 규칙).
-    ingest_completion_routing_key: str = "ingestion.completed"
+    # payload 에는 jobId/adminUserId/mode/status 등 계약 필드만 담고
+    # accessToken/refreshToken/cloudId 같은 credential set 은 절대 포함하지 않는다(루트 CLAUDE.md 보안 규칙).
+    ingest_completion_routing_key: str = "lina.admin.ingest.completion"
+    # BFF 기준 completion queue 및 DLQ. default 는 기존 운영 기준명(`lina.admin.ingest.completion*`)으로
+    # 정합한다.
+    ingest_completion_queue: str = "lina.admin.ingest.completion"
+    ingest_completion_dlq: str = "lina.admin.ingest.completion.dlq"
+
+    # --- 수집 작업 큐 (BFF ingest job consume 경로) ---
+    # BFF는 exchange/routing 으로 publish 하므로 Data Ingestion Pipeline 이 소유/선언.
+    ingest_job_exchange: str = "lina.admin.ingest"
+    ingest_job_routing_key: str = "admin.ingest.requested"
+    ingest_job_queue: str = "lina.data-ingestion.ingest"
 
     # --- Delta Sync (FR-005) ---
     # mode=delta 가 vendored Data Sync Agent(run_delta_sync)로 직전 수집 스냅샷과 변경분을 비교할 때

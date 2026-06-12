@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from app.config import Settings
 from app.ingestion.bootstrap import (
     build_chunking_worker_deps,
@@ -54,6 +56,9 @@ def test_build_chunking_worker_deps_shares_provided_raw_store() -> None:
 
 
 def test_build_chunking_worker_deps_real_threads_embedder_dimension(monkeypatch) -> None:
+    pytest.importorskip("sentence_transformers", reason="embedding optional dependency is not installed")
+    pytest.importorskip("torch", reason="sentence-transformers runtime dependency missing")
+
     # 회귀(B): 실 어댑터 모드에서 QdrantPoolStore.from_settings 가 임베더의 '실제' 차원을
     # 전달받아야 컬렉션 차원과 벡터 차원이 일치한다(비-기본 모델 시 mismatch 방지).
     # 이 파일은 원칙적으로 실 어댑터 경로를 통합 환경에서 검증하지만, 본 케이스는 무거운
@@ -96,3 +101,23 @@ def test_build_chunking_worker_deps_real_threads_embedder_dimension(monkeypatch)
     # 기본값 1024 가 아니라 임베더가 보고한 768 이 전달되어야 한다.
     assert captured["dense_dimension"] == 768
     assert deps.dense_embedder.dimension == 768
+
+
+def test_default_completion_queue_settings() -> None:
+    settings = Settings()
+
+    assert settings.ingest_completion_routing_key == "lina.admin.ingest.completion"
+    assert settings.ingest_completion_queue == "lina.admin.ingest.completion"
+    assert settings.ingest_completion_dlq == "lina.admin.ingest.completion.dlq"
+
+
+def test_override_completion_queue_settings() -> None:
+    settings = Settings(
+        ingest_completion_routing_key="completion.key",
+        ingest_completion_queue="completion.queue",
+        ingest_completion_dlq="completion.queue.dlq",
+    )
+
+    assert settings.ingest_completion_routing_key == "completion.key"
+    assert settings.ingest_completion_queue == "completion.queue"
+    assert settings.ingest_completion_dlq == "completion.queue.dlq"

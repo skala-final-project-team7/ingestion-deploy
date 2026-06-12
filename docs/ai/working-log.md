@@ -5,6 +5,146 @@
 
 ---
 
+## 2026-06-11 — featureI-7c Step 1 완료: completion 이벤트 DTO/스키마 정합
+
+**작업**: `IngestCompletionEvent` 스키마와 필수 필드를 API-spec v2.5.0 기준으로 정합.
+
+**변경 범위**
+
+- `app/api/ingest_completion.py`
+  - `jobId/adminUserId/mode/status/completedAt` 중심 payload 계약 적용.
+  - `status` 허용값을 `COMPLETED|FAILED`로 제한.
+
+## 2026-06-11 — featureI-7c Step 2 완료: MQ 발행 계약 정합
+
+**작업**: completion 발행 기본 라우팅 계약 정리.
+
+**변경 범위**
+
+- `app/ingestion/workers/publisher.py`
+  - 기본 exchange `""`, 기본 routing key `lina.admin.ingest.completion` 정합.
+  - `delivery_mode=2`, `content_type="application/json"` 적용.
+
+## 2026-06-11 — featureI-7c Step 3 완료: ingestion worker publish 연결
+
+**작업**: 수집 성공/실패 종료 경로에서 completion publish 호출 연결.
+
+**변경 범위**
+
+- `app/ingestion/workers/ingestion_worker.py`
+  - full/delta 수집 종료 분기에서 COMPLETED/FAILED 이벤트 발행 보강.
+
+## 2026-06-11 — featureI-7c Step 4 완료: 실패 경로에서 FAILED 강제 발행 보장
+
+**작업**: 수집 실패 시 publish 보장을 강화.
+
+**변경 범위**
+
+- `app/ingestion/workers/ingestion_worker.py`
+  - 실패 경로에서 completion publish의 선행/우선 보장 강화.
+
+## 2026-06-11 — featureI-7c Step 5 완료: publish 실패 처리/재시도 정합
+
+**작업**: publisher 실패 재시도/로그/민감정보 처리 정합화.
+
+**변경 범위**
+
+- `app/ingestion/workers/publisher.py`
+  - 재시도 정책, backoff, 실패 시 민감정보 마스킹 로그 보완.
+
+## 2026-06-11 — featureI-7c Step 6 완료: completion 큐/라우팅 설정 정비
+
+**작업**: completion 큐/키 기본값을 config로 정비.
+
+**변경 범위**
+
+- `app/config.py`
+  - `ingest_completion_routing_key`, completion queue/DLQ 기본값 설정 정비.
+
+## 2026-06-11 — featureI-7c Step 7 완료: 기본 단위 테스트 정리
+
+**작업**: worker 중심 completion 이벤트 단위 테스트 보강.
+
+**변경 범위**
+
+- `tests/ingestion/test_ingestion_worker.py`
+  - 성공/실패 publish 상태 검증 및 민감 필드 미포함 보강.
+
+## 2026-06-11 — featureI-7c Step 8 완료: completion 이벤트 전용 테스트 추가
+
+**작업**: Step 8 전용 테스트 스위트 추가.
+
+**변경 범위**
+
+- `tests/ingestion/test_completion_events.py`(신규)
+  - `job_id` 누락/`admin_user_id` 보정/비터미널 status 유효성 검증.
+  - `exchange`, `routing_key`, `delivery_mode`, `content_type` 발행 속성 검증.
+
+**검증**
+
+- `python3 -m pytest tests/ingestion/test_completion_events.py`: 실행 환경에서 `pytest` 미설치로 보류.
+
+**남은 리스크/후속**
+
+- Step 9 통합 테스트는 미진행.
+
+## 2026-06-11 — featureI-7c Step 9 진행: completion 큐 통합 경로 검증
+
+**작업**: `tests/integration/` 통합 테스트를 추가해 실제 RabbitMQ completion 큐 적재/consume 경로 검증.
+
+**변경 범위**
+
+- `tests/integration/test_completion_queue_integration.py`(신규)
+  - `Testcontainers` 가능 시 `RabbitMqContainer`로 RabbitMQ 기동 후 completion queue를 선언하고
+    `QueueIngestCompletionPublisher`로 이벤트를 적재.
+  - `basic_get` consume로 메시지 수신을 확인하고, 메시지 속성(`delivery_mode`, `content_type`) 및
+    payload(`status/eventType`, jobId, 민감 필드 미포함)를 검증.
+  - `COMPLETED`, `FAILED` 2종 상태를 연속 publish/consume.
+
+**검증**
+
+- `python3 -m pytest tests/integration/test_completion_queue_integration.py`
+  실행 시 pytest는 확인되었고, `testcontainers` 설치 후에도 현재 환경은 Docker 소켓 권한(`Operation not
+  permitted`)으로 컨테이너 시작이 불가해 통합 실행은 실패(실패 처리)했습니다.
+- 점검 중 통합 테스트 내부 검증 문자열을 실제 메시지 값(`test integration failure`) 기준으로
+  `ingest failure` → `test integration failure`로 수정했습니다.
+- 변경된 통합 테스트는 Docker 권한/도커 접근 가능한 환경에서 재실행 시 실제 completion queue 적재
+  경로 검증이 가능합니다.
+
+**남은 리스크/후속**
+
+- Testcontainers/도커/RabbitMQ 환경이 없는 경우 이 테스트는 실행 시 스킵됨.
+
+## 2026-06-11 — Step 9 보강: 통합 테스트 검증 오류 보정
+
+**작업**: Step 9 통합 테스트의 값 검증 실패 가능성을 제거.
+
+**변경 범위**
+
+- `tests/integration/test_completion_queue_integration.py`
+  - FAILED payload message 검증 어서션을 `"test integration failure"`로 정합.
+
+**검증**
+
+- 실제 메시지 본문(`message="test integration failure"`) 기준으로 어서션을 맞춰 재확인.
+- 실행은 동일 Docker 소켓 권한 제약으로 통합 컨테이너 구동 단계에서 재확인 필요.
+
+## 2026-06-11 — Codex 작업 지침 표면 추가
+
+**작업**: 기존 Claude Code 중심 문서 체계를 Codex에서도 바로 사용할 수 있도록 `AGENTS.md` 계층을
+추가했다. 루트 `AGENTS.md`는 저장소 공통 규칙, `app/AGENTS.md`는 `app/`·`tests/` 전용 규칙을 담는다.
+기존 `CLAUDE.md`와 `app/CLAUDE.md`는 Claude Code 호환을 위해 유지하고, 규칙 변경 시 두 계열을 함께
+갱신하도록 상호 참조를 추가했다.
+
+**변경 범위**
+
+- `AGENTS.md`, `app/AGENTS.md`: Codex용 지속 지침 추가.
+- `CLAUDE.md`, `app/CLAUDE.md`: Codex 문서와의 연결 문구 추가.
+- `docs/ai/workflow.md`: Claude Code 전용 표현을 Codex/Claude 공용 작업 플로우로 조정.
+- `README.md`: AI 작업 지침 섹션 추가.
+
+**검증**: 문서 변경만 수행. `git diff --check` 통과.
+
 ## 2026-05-26 — ADR 0003 항목 3 운영 wiring: crawl 잡 기록 연결 (ingestion 단독)
 
 **작업**: 항목 3에서 `crawler.run_full_crawl`에 optional `jobs` 주입을 추가했으나, in-process

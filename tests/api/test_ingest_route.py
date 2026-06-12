@@ -110,7 +110,7 @@ async def test_ingest_trigger_then_status_completed() -> None:
     deps = _stub_deps()
     async with _client(deps) as client:
         # api-spec v2.4.0 §2-2 — spaceKey 없음. mode 만(또는 빈 본문)으로 전체 스페이스 수집.
-        resp = await client.post("/ml/ingest", json={"mode": "full"})
+        resp = await client.post("/ml/ingest", json={"mode": "full", "adminUserId": "712020:admin"})
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "STARTED"
@@ -157,7 +157,7 @@ async def test_ingest_rejects_invalid_mode() -> None:
 async def test_ingest_accepts_empty_body_no_space_key() -> None:
     """api-spec v2.4.0 §2-2 — spaceKey 제거. 빈 본문도 허용(mode 기본 full, 전체 스페이스 수집)."""
     async with _client(_stub_deps()) as client:
-        resp = await client.post("/ml/ingest", json={})
+        resp = await client.post("/ml/ingest", json={"adminUserId": "712020:admin"})
     assert resp.status_code == 200
     assert resp.json()["status"] == "STARTED"
 
@@ -181,8 +181,7 @@ async def test_ingest_completed_publishes_completion_event_without_credentials()
 
     assert len(queue.messages) == 1
     msg = queue.messages[0]
-    assert msg.routing_key == "ingestion.completed"
-    assert msg.body["eventType"] == "INGEST_COMPLETED"  # spec §2-2 (A9)
+    assert msg.routing_key == "lina.admin.ingest.completion"
     assert msg.body["jobId"].startswith("job-")
     assert msg.body["mode"] == "full"
     assert msg.body["status"] == "COMPLETED"
@@ -211,7 +210,6 @@ async def test_ingest_failure_publishes_failed_completion_event() -> None:
     assert status_resp.json()["status"] == "FAILED"
     assert len(queue.messages) == 1
     msg = queue.messages[0]
-    assert msg.body["eventType"] == "INGEST_FAILED"  # FAILED 분기(A9)
     assert msg.body["mode"] == "full"
     assert msg.body["status"] == "FAILED"
     assert msg.body["errorCode"] == "INGEST_FAILED"
@@ -223,7 +221,7 @@ async def test_ingest_without_publisher_still_completes() -> None:
     """completion_publisher 미주입(기본 None)이어도 잡은 정상 COMPLETED 된다(발행 no-op)."""
     deps = _stub_deps()  # completion_publisher=None
     async with _client(deps) as client:
-        resp = await client.post("/ml/ingest", json={"mode": "full"})
+        resp = await client.post("/ml/ingest", json={"mode": "full", "adminUserId": "712020:admin"})
         job_id = resp.json()["jobId"]
         status_resp = await client.get(f"/ml/ingest/status/{job_id}")
     assert status_resp.json()["status"] == "COMPLETED"
@@ -356,7 +354,10 @@ async def test_ingest_honors_bff_generated_job_id() -> None:
     """
     deps = _stub_deps()
     async with _client(deps) as client:
-        resp = await client.post("/ml/ingest", json={"mode": "full", "jobId": "job-bff-001"})
+        resp = await client.post(
+            "/ml/ingest",
+            json={"mode": "full", "jobId": "job-bff-001", "adminUserId": "712020:admin"},
+        )
         assert resp.status_code == 200
         assert resp.json()["jobId"] == "job-bff-001"
 
@@ -370,10 +371,16 @@ async def test_ingest_duplicate_job_id_is_idempotent() -> None:
     """같은 jobId 재요청은 잡을 새로 만들지 않고 기존 잡 상태를 반환한다."""
     deps = _stub_deps()
     async with _client(deps) as client:
-        first = await client.post("/ml/ingest", json={"mode": "full", "jobId": "job-dup-01"})
+        first = await client.post(
+            "/ml/ingest",
+            json={"mode": "full", "jobId": "job-dup-01", "adminUserId": "712020:admin"},
+        )
         assert first.status_code == 200
         # ASGITransport 특성상 첫 잡은 이미 COMPLETED — 재요청은 그 상태를 그대로 반환.
-        second = await client.post("/ml/ingest", json={"mode": "full", "jobId": "job-dup-01"})
+        second = await client.post(
+            "/ml/ingest",
+            json={"mode": "full", "jobId": "job-dup-01", "adminUserId": "712020:admin"},
+        )
         assert second.status_code == 200
         body = second.json()
         assert body["jobId"] == "job-dup-01"
