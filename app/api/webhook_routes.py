@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : 3중 삭제 동기화의 즉시(실시간) 경로. Confluence 가 보내는 page/attachment 삭제·
           휴지통 이벤트를 수신해 ``SyncWorker.handle_webhook_event`` 로 Qdrant soft-delete
           (``is_deleted=true``)를 즉시 반영한다. 1차 인증·서명 검증은 BFF/NetworkPolicy 책임

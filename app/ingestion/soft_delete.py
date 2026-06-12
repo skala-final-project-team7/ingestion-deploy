@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : Delta `deleted_candidate` / Confluence Trash API / 실시간 Webhook 세 삭제 트리거가
           공통으로 호출하는 단일 soft-delete 적용 함수를 제공한다. ADR 0003 항목 4로 도입된
           store soft-delete 능력(`soft_delete_by_page_id`/`soft_delete_by_attachment_id`)을

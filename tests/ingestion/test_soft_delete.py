@@ -1,5 +1,8 @@
 """apply_soft_deletes 단위 테스트 — 3중 삭제 트리거 공통 funnel (featureI-5b).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 dedup·정렬 결정론, id 단위 예외 격리(부분 성공), 빈 입력 no-op, page/attachment 혼합을 검증한다.
 외부 의존성은 호출을 기록하는 fake SoftDeleteStore 로 대체한다.
 """

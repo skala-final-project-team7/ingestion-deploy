@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : 첨부 바이너리(PDF/Word/Excel/CSV)를 텍스트로 추출하는 결정론 Pipeline 의 진입점.
           유형별 추출기(pdf/docx/spreadsheet)로 디스패치하고, 추출 실패는 쿼리 전체 실패로
           전파하지 않고 ``ok=False``/``reason`` 으로 격리한다(graceful degrade). 이미지·도형은

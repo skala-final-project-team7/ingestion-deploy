@@ -1,5 +1,8 @@
 """Ingestion 부트스트랩(composition root) 단위 테스트 — PoC 모드 조립 검증.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 실 어댑터 모드는 외부 인프라(E5/Qdrant/Mongo/OpenAI) 의존이라 통합 환경에서 검증하고,
 여기서는 PoC 모드(전부 Fake) 조립과 raw_store 공유 선택 로직만 검증한다.
 """

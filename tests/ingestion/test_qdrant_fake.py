@@ -1,5 +1,8 @@
 """FakeQdrantPoolStore soft-delete 검증 (ADR 0003 항목 4).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 실 ``QdrantPoolStore`` 와 인터페이스 정합으로 추가한 soft_delete_by_page_id /
 soft_delete_by_attachment_id 가 Point 를 보존한 채 ``is_deleted`` 플래그만 갱신하는지
 검증한다(hard delete 와 구분). 외부 Qdrant 없이 in-memory Fake 로 수행.

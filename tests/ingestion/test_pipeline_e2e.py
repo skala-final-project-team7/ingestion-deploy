@@ -1,5 +1,8 @@
 """파이프라인 end-to-end PoC 테스트 (featureI-7) — crawl → raw_pages → 큐 → 색인 전 체인.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 공급원 어댑터·임베더·Qdrant·Mongo·큐를 모두 Fake/in-memory 로 대체해, 두 단계로 분리된
 파이프라인이 하나의 흐름으로 동작하는지 in-process 로 검증한다(멱등성·ACL 게이트 전파 포함).
 """

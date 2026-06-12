@@ -1,5 +1,8 @@
 """수집 완료 이벤트 단위 테스트 (api-spec v2.5.0).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 - completion event payload 에 Confluence credential(accessToken/refreshToken/cloudId)이
   포함되지 않는지 검증한다.
 - payload 의 spec §2-2 정합(A9) — ``eventType``(INGEST_COMPLETED/INGEST_FAILED 분기) +

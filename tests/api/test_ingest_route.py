@@ -1,5 +1,8 @@
 """수집 HTTP API 라우트 회귀 — POST /ml/ingest + status + health.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 본 테스트는 api-spec v2.2.0 §2-2/§2-3/§2-4-2 계약을 검증한다.
 - POST /ml/ingest → jobId 발급 + status=STARTED + startedAt(KST), 백그라운드 크롤 후 COMPLETED.
 - GET /ml/ingest/status/{jobId} → jobId/status/totalPages/processedPages/failedPages/startedAt.

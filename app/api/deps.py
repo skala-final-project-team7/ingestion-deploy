@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : ``POST /ml/ingest`` 라우트가 사용하는 의존성을 ``Settings`` 기반으로 조립한다.
           공급원 어댑터(``build_source_adapter`` — json_fixture | atlassian)를 startup 1회
           생성해 잡 간 재사용하고, 잡 수명주기 저장소(``InMemoryIngestJobStore``)와

@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : fastembed의 SparseTextEmbedding(``Qdrant/bm25``)을 래핑해 SparseEmbedder
           인터페이스(`app/ingestion/embedder/base.py`)를 구현한다. fastembed는 Qdrant
           호환 sparse vector(indices+values)를 직접 산출하며, idf modifier는 Qdrant

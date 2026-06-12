@@ -1,5 +1,8 @@
 """app.ingestion.chunker — Adaptive Chunker [Pipeline].
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 doc_type / attachment_type 분기에 따라 본문·첨부 텍스트를 청크로 분할한다.
 2단계 하이브리드: 1차 논리 단위 분할 → 2차 800토큰 재분할(100토큰 오버랩) → 200토큰 하한선 병합.
 원자성 유지 유형(FAQ Q&A·ADR·회의록 안건·트러블슈팅 케이스)은 2차 분할·하한선 병합에서 제외한다.

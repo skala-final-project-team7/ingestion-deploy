@@ -1,5 +1,8 @@
 """run_delta_sync 단위 테스트 — vendored Data Sync Agent 통합 경계 검증.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 vendored delta sync workflow 는 fake runner 로 대체하고, ChangedDocument→PageObject
 매핑·raw_pages 적재·Chunking Queue 재투입·삭제 후보 집계를 검증한다. 코드 리뷰
 재점검(A3·A13) 후속으로 acl_provider seam(주입 시 provider ACL, 미주입 시 space 합성)과

@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : Qdrant store 를 소유하고, 3중 삭제 동기화의 3개 트리거를 ``apply_soft_deletes``
           단일 funnel 로 모은다.
             1) Delta Sync ``deleted_candidate`` — ``apply_delta_deletions``(확인 게이트 보존:

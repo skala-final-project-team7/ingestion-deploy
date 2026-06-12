@@ -1,5 +1,8 @@
 """app — Data Ingestion Pipeline (척척학사/LINA).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 Confluence 문서·첨부를 수집(Crawl/Delta Sync)하여 첨부 텍스트 추출 → Adaptive Chunking →
 Dual Embedding 색인까지 수행하는 비동기 수집 파이프라인. RAG Pipeline(질의/응답)과 분리된
 독립 배포 단위이며, RabbitMQ 큐(Ingestion / Attachment / Chunking / Embedding)로 단계를 잇는다.

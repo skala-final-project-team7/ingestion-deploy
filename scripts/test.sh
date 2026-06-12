@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 작성자 : 최태성
+# 담당 영역 : ingestion
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

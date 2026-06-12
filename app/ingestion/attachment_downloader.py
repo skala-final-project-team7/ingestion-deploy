@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : 청커(``chunk_attachment``)는 첨부 파일을 파일 시스템에서 직접 읽으므로 ``local_path`` 가
           채워져 있어야 한다(``app/schemas/page_object.py`` Attachment 주석 — "다운로드 헬퍼가
           local_path 를 채우는 것이 정공법"). 본 모듈은 ``local_path`` 가 없는 첨부를

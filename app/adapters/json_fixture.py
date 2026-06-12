@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : samples/*.json(Atlassian-Python-API 응답 포맷)을 읽어 표준 PageObject로
           변환한다. 백엔드/Atlassian 연동 전까지 Ingestion 파이프라인의 입력 소스이자
           단위·통합 테스트의 데이터 소스로 사용한다.

@@ -1,5 +1,8 @@
 """admin-key credential 경로(Basic + site URL) 테스트 — api-spec v2.6.1 §1-4 ④⑤.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 Feature 0 게이트 결론(2026-06-11): admin-key 는 OAuth Bearer/게이트웨이 경로에서 동작하지
 않는다. 본 테스트는 (1) Basic 인증 헤더 산출, (2) vendored ConfluenceClient 무수정
 서브클래스의 site URL 라우팅, (3) 필수 admin credential fail-fast, (4) factory 의

@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : 3중 삭제 동기화 2번째 안전망(Trash API). Confluence ``status=trashed`` content 를
           조회해 삭제된 page_id/attachment_id 를 산출한다. Sync Worker 가 이 결과를
           ``apply_soft_deletes`` 로 넘겨 Qdrant ``is_deleted=true`` 를 set 한다(주1회 →

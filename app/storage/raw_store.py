@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : Data Ingestion Agent(FR-001)가 수집한 표준 PageObject·첨부 원본을 MongoDB
           ``raw_pages`` / ``raw_attachments`` 컬렉션에 적재하기 위한 어댑터. 후속
           Chunking/Extraction Worker 가 ``page_id`` / ``attachment_id`` 로 원본을

@@ -1,5 +1,8 @@
 """SyncWorker 단위 테스트 — 3중 삭제 트리거 → soft_delete (featureI-5b).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 Delta 확인 게이트(기본 미적용 / confirm 적용), Trash sync(FakeTrashSource), 실시간 Webhook
 (page/attachment/빈 이벤트)를 검증한다. store 는 실 ``FakeQdrantPoolStore`` 를 써서 Point 가
 보존된 채 ``is_deleted`` 만 set 되는지 끝까지 확인한다(funnel→store 정합).

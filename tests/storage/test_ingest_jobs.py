@@ -1,5 +1,8 @@
 """InMemoryIngestJobStore 회귀 — 스냅샷 반환 + 외부 jobId 수용 (배포 전 점검 2026-06-10).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 - ``get``/``update``/``create`` 는 내부 레코드의 **스냅샷**을 반환해야 한다. 라이브 객체를
   반환하면 백그라운드 태스크의 필드별 setattr 와 상태 조회 라우트의 직렬화가 같은 객체에서
   교차해 torn read(예: COMPLETED 인데 카운트 0)가 된다.

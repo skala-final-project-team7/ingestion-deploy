@@ -1,5 +1,8 @@
 """Confluence 삭제 Webhook 라우트 회귀 — POST /ml/confluence/webhook (featureI-5b).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 parse_confluence_delete_event(이벤트 유형별 파싱·비삭제 무시)와 라우트 end-to-end(soft-delete
 반영·ignored·잘못된 JSON 400)를 검증한다. store 는 실 FakeQdrantPoolStore 로 is_deleted 까지 확인.
 코드 리뷰 재점검(A18) 후속 — 옵션 공유 시크릿(``webhook_shared_secret``) 설정 시 X-Webhook-Secret

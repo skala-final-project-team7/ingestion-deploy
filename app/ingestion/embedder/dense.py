@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : sentence-transformers의 SentenceTransformer를 래핑해 DenseEmbedder
           인터페이스(`app/ingestion/embedder/base.py`)를 구현한다. e5 모델은 입력에
           모드별 프리픽스(`passage: ` / `query: `)를 요구하므로 어댑터가 해당

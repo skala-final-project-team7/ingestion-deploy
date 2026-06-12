@@ -1,5 +1,8 @@
 """app.ingestion — Ingestion 파이프라인.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 표준 PageObject를 검색 가능한 벡터로 변환해 Qdrant Multi-Pool에 적재한다.
 처리 결과는 MongoDB ingestion_jobs 컬렉션에 단계별 상태로 기록한다.
 

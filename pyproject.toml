@@ -1,3 +1,6 @@
+# 작성자 : 최태성
+# 담당 영역 : ingestion
+
 [project]
 name = "lina-data-ingestion-pipeline"
 version = "0.1.0"

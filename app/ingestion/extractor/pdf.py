@@ -1,5 +1,8 @@
 """PDF 텍스트 추출 (FR-002) — PyMuPDF(fitz) 1차 → pdfplumber 폴백 [Pipeline].
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 이미지·도형은 추출하지 않고 텍스트 레이어만 추출한다. 라이브러리는 지연 import 하여
 app import 가 ingestion extras 미설치 환경에서도 동작하도록 한다.
 """

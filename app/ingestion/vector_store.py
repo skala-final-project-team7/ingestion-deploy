@@ -2,6 +2,7 @@
 
 --------------------------------------------------
 작성자 : 최태성
+담당 영역 : ingestion
 작성목적 : LINA RAG 파이프라인의 Multi-Pool Vector Store(Qdrant) 적재용 Point payload를
           구성한다. 청크를 db-schema.md §1.2 payload 스키마로 변환하며, 세 Pool
           (title/content/label)은 동일한 payload 스키마를 공유한다.

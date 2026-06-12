@@ -1,5 +1,8 @@
 """PikaMessageConsumer 회귀 — malformed body poison 격리 (배포 전 점검 2026-06-10).
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 비 JSON·비 dict body 는 재시도해도 해소되지 않는 영구 실패다. generator 밖으로
 전파되면 Worker 루프가 미ack 상태로 죽고 브로커 재전송 crash 루프가 되므로(A4 와
 같은 뿌리), consumer 가 ``basic_nack(requeue=False)`` 로 거부하고 다음 메시지로

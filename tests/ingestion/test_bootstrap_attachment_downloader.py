@@ -1,5 +1,8 @@
 """build_attachment_downloader (FR-002 bootstrap 배선) 테스트.
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 - json_fixture 소스 → None(다운로드 불필요, fixture 는 local_path 보유).
 - atlassian 소스 → HttpAttachmentDownloader(설정 download_dir 사용) + A11 검증 배선
   (allowed_hosts=Atlassian API 호스트, file_uri_allowed_prefix=samples_dir).

@@ -1,5 +1,8 @@
 """app.schemas — 계층 간 데이터 계약 [Pipeline].
 
+작성자 : 최태성
+담당 영역 : ingestion
+
 Ingestion 파이프라인 단계 간에 dict를 그대로 전달하지 않고 Pydantic 모델로 정의한다.
 RAG 레포(skala-final/rag)와 공유하는 수집·청킹 모델만 둔다(질의/응답 모델 rag_state·response는
 RAG 레포 전용이라 본 레포에는 포함하지 않는다).
