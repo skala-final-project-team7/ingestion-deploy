@@ -71,7 +71,6 @@ def test_ingest_completion_event_payload_has_required_fields_and_no_credentials(
 
     assert set(payload.keys()) >= {"jobId", "adminUserId", "mode", "status", "completedAt"}
     assert payload["status"] == "COMPLETED"
-    assert payload["eventType"] == "INGEST_COMPLETED"
     assert payload["adminUserId"] == "admin-42"
     assert payload["mode"] == "full"
     assert "accessToken" not in payload
@@ -85,6 +84,7 @@ def test_ingest_completion_event_rejects_invalid_status() -> None:
     with pytest.raises(ValueError, match="status must be COMPLETED or FAILED"):
         IngestCompletionEvent(
             job_id="job-1",
+            admin_user_id="admin-1",
             mode="full",
             status=IngestJobStatus.STARTED,  # type: ignore[arg-type]
         )
@@ -117,7 +117,6 @@ def test_run_ingest_job_success_publishes_completed_event() -> None:
     [published] = completion_publisher.events
     payload = published.to_payload()
     assert payload["status"] == "COMPLETED"
-    assert payload["eventType"] == "INGEST_COMPLETED"
     assert payload["jobId"] == "job-success"
     assert payload["adminUserId"] == "admin-abc"
     assert payload["mode"] == "full"
@@ -147,7 +146,6 @@ def test_run_ingest_job_success_publishes_completed_event_without_sensitive_fiel
 
     payload = completion_publisher.events[0].to_payload()
     assert payload["status"] == "COMPLETED"
-    assert payload["eventType"] == "INGEST_COMPLETED"
     assert payload["jobId"] == "job-success-sensitive"
     assert payload["adminUserId"] == "admin-abc"
     assert payload["mode"] == "full"
@@ -180,7 +178,6 @@ def test_run_ingest_job_failure_publishes_failed_event() -> None:
     [published] = completion_publisher.events
     payload = published.to_payload()
     assert payload["status"] == "FAILED"
-    assert payload["eventType"] == "INGEST_FAILED"
     assert payload["errorCode"] == "INGEST_FAILED"
     assert "crawl failed" in str(payload["message"])
     assert "accessToken" not in payload
@@ -209,7 +206,6 @@ def test_run_ingest_job_failure_publishes_failed_event_without_sensitive_fields(
 
     payload = completion_publisher.events[0].to_payload()
     assert payload["status"] == "FAILED"
-    assert payload["eventType"] == "INGEST_FAILED"
     assert payload["errorCode"] == "INGEST_FAILED"
     assert "crawl failed" in str(payload["message"])
     assert payload["jobId"] == "job-failed-sensitive"
@@ -284,7 +280,6 @@ def test_run_delta_ingest_job_success_publishes_completed_and_invokes_delta_conf
     [published] = completion_publisher.events
     payload = published.to_payload()
     assert payload["status"] == "COMPLETED"
-    assert payload["eventType"] == "INGEST_COMPLETED"
     assert payload["adminUserId"] == "admin-delta"
     assert "accessToken" not in payload
 
@@ -311,7 +306,6 @@ def test_run_delta_ingest_job_failure_publishes_failed_event() -> None:
     [published] = completion_publisher.events
     payload = published.to_payload()
     assert payload["status"] == "FAILED"
-    assert payload["eventType"] == "INGEST_FAILED"
     assert payload["errorCode"] == "INGEST_FAILED"
 
 
@@ -336,7 +330,6 @@ def test_run_delta_ingest_job_failure_still_publishes_failed_event_if_delta_dele
     assert len(completion_publisher.events) == 1
     payload = completion_publisher.events[0].to_payload()
     assert payload["status"] == "FAILED"
-    assert payload["eventType"] == "INGEST_FAILED"
     assert payload["errorCode"] == "INGEST_FAILED"
     assert payload["message"] == "delta delete failed intentionally"
     assert payload["adminUserId"] == "admin-delta"

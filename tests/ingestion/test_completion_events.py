@@ -37,19 +37,19 @@ def test_completion_event_rejects_missing_job_id() -> None:
         IngestCompletionEvent(
             job_id="",
             mode="full",
+            admin_user_id="admin-1",
             status=IngestJobStatus.COMPLETED,
         )
 
 
-def test_completion_event_handles_missing_admin_user_id_as_unknown_admin() -> None:
-    event = IngestCompletionEvent(
-        job_id="job-1",
-        mode="full",
-        status=IngestJobStatus.COMPLETED,
-        admin_user_id="",
-    )
-
-    assert event.to_payload()["adminUserId"] == "unknown-admin"
+def test_completion_event_rejects_missing_admin_user_id() -> None:
+    with pytest.raises(ValueError, match="admin_user_id is required"):
+        IngestCompletionEvent(
+            job_id="job-1",
+            mode="full",
+            status=IngestJobStatus.COMPLETED,
+            admin_user_id="",
+        )
 
 
 def test_completion_event_rejects_non_terminal_status() -> None:
@@ -57,6 +57,7 @@ def test_completion_event_rejects_non_terminal_status() -> None:
         IngestCompletionEvent(
             job_id="job-1",
             mode="full",
+            admin_user_id="admin-1",
             status=IngestJobStatus.STARTED,  # type: ignore[arg-type]
         )
 
