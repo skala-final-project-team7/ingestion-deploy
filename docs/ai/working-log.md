@@ -7,6 +7,44 @@
 
 ## 2026-06-11 — featureI-7c Step 1 완료: completion 이벤트 DTO/스키마 정합
 
+## 2026-06-12 — featureI-7c Step 10 완료: ingest job DLQ 정책 반영 + 전체 테스트 검증
+
+**작업**: `ingest job` 큐에 DLQ 선언/재시도 제어를 적용하고, 실패 핸들링 정책 테스트를 추가한 뒤 전체 테스트를 통과시키는 방식으로 검증까지 완료.
+
+**변경 범위**
+
+- `app/config.py`
+  - `ingest_job_dlq` 기본값 추가: `lina.data-ingestion.ingest.dlq`.
+- `app/ingestion/bootstrap.py`
+  - `open_rabbitmq_channel()`에서 `ingest_job_queue`를 `durable`로 선언하면서 DLX/라우팅 키를
+    `x-dead-letter-exchange=""`, `x-dead-letter-routing-key=settings.ingest_job_dlq`로 설정.
+  - `ingest_job_dlq` 큐 durable 선언 추가.
+- `app/ingestion/workers/ingest_job_main.py`
+  - 실패 처리 정책 정합: `auto_ack=False`, 파싱/업무 예외 시 `basic_reject(requeue=False)` 또는
+    `x-retry-count` 기반 재시도(`1000/2000/4000/8000/10000ms`) 후 동일 큐 재발행, 재시도 소진 시
+    DLQ 전환.
+  - `_get_retry_count`, `_publish_retry_message`, `_handle_failure`, `_parse_message` 테스트 가능 형태 정비.
+- `app/ingestion/workers/ingestion_worker.py`
+  - 기존 멱등성 가드(동일 `job_id` 상태 점검: `IN_PROGRESS/COMPLETED/FAILED` skip) 유지/확인.
+- `tests/ingestion/test_bootstrap.py`(신규/수정)
+  - `ingest job` 기본값 및 오버라이드(교환기/라우팅키/DLQ) 검증 케이스 추가.
+- `tests/ingestion/test_ingest_job_main.py`(신규)
+  - `retry header` 파싱, malformed 메시지 처리, 재시도/재발행, 재시도 소진 DLQ 진입, 성공/실패 경로
+    소비 루프 동작을 단위 테스트로 커버.
+
+**검증**
+
+- `python3.11 -m pytest tests/ingestion/test_ingest_job_main.py tests/ingestion/test_bootstrap.py`
+  - `18 passed, 1 skipped`
+- `python3.11 -m pytest`
+  - `238 passed, 2 skipped`
+- `./scripts/test.sh`는 실행 환경에 `pytest`가 없으면 “Install pytest or adjust scripts/test.sh.”로 종료되는
+  출력만 남았으나, 위 `python3.11 -m pytest` 기준 전체 테스트는 통과 처리됨.
+
+**비고**
+
+- 큐별 DLQ 분리는 유지: `ingest queue -> lina.data-ingestion.ingest.dlq`, `completion queue -> lina.admin.ingest.completion.dlq`.
+
 **작업**: `IngestCompletionEvent` 스키마와 필수 필드를 API-spec v2.5.0 기준으로 정합.
 
 **변경 범위**

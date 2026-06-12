@@ -197,6 +197,19 @@ def run_ingest_job_from_payload(
 ) -> None:
     """RabbitMQ ``admin.ingest.requested`` 메시지를 파싱해 full/delta ingest 를 실행한다."""
     command = IngestJobCommand.from_payload(payload)
+    existing = deps.job_store.get(command.job_id)
+    if (
+        existing is not None
+        and existing.status
+        in {IngestJobStatus.IN_PROGRESS, IngestJobStatus.COMPLETED, IngestJobStatus.FAILED}
+    ):
+        _LOGGER.info(
+            "ingest job 중복 수신 skip (idempotent): job_id=%s status=%s",
+            command.job_id,
+            existing.status.value,
+        )
+        return
+
     credential_lookup_callable = credential_lookup or getattr(deps, "credential_lookup", None)
     if command.mode == "delta":
         run_delta_ingest_job(

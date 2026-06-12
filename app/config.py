@@ -162,6 +162,8 @@ class Settings(BaseSettings):
     ingest_job_exchange: str = "lina.admin.ingest"
     ingest_job_routing_key: str = "admin.ingest.requested"
     ingest_job_queue: str = "lina.data-ingestion.ingest"
+    # BFF 요청 기반 ingest job 큐의 DLQ. 기본값은 `*.dlq` 패턴으로 보존.
+    ingest_job_dlq: str = "lina.data-ingestion.ingest.dlq"
 
     # --- Delta Sync (FR-005) ---
     # mode=delta 가 vendored Data Sync Agent(run_delta_sync)로 직전 수집 스냅샷과 변경분을 비교할 때

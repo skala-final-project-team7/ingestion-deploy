@@ -121,3 +121,26 @@ def test_override_completion_queue_settings() -> None:
     assert settings.ingest_completion_routing_key == "completion.key"
     assert settings.ingest_completion_queue == "completion.queue"
     assert settings.ingest_completion_dlq == "completion.queue.dlq"
+
+
+def test_default_ingest_job_queue_settings() -> None:
+    settings = Settings()
+
+    assert settings.ingest_job_exchange == "lina.admin.ingest"
+    assert settings.ingest_job_routing_key == "admin.ingest.requested"
+    assert settings.ingest_job_queue == "lina.data-ingestion.ingest"
+    assert settings.ingest_job_dlq == "lina.data-ingestion.ingest.dlq"
+
+
+def test_override_ingest_job_queue_settings() -> None:
+    settings = Settings(
+        ingest_job_exchange="exchange.test",
+        ingest_job_routing_key="route.test",
+        ingest_job_queue="queue.test",
+        ingest_job_dlq="queue.test.dlq",
+    )
+
+    assert settings.ingest_job_exchange == "exchange.test"
+    assert settings.ingest_job_routing_key == "route.test"
+    assert settings.ingest_job_queue == "queue.test"
+    assert settings.ingest_job_dlq == "queue.test.dlq"

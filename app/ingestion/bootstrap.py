@@ -322,14 +322,29 @@ def open_rabbitmq_channel(settings: Settings | None = None) -> tuple[Any, Any]:
     connection = pika.BlockingConnection(pika.URLParameters(resolved.rabbitmq_url))
     channel = connection.channel()
     channel.queue_declare(queue=QUEUE_CHUNKING, durable=True)
-    channel.queue_declare(queue=resolved.ingest_completion_queue, durable=True)
+    channel.queue_declare(
+        queue=resolved.ingest_completion_queue,
+        durable=True,
+        arguments={
+            "x-dead-letter-exchange": "",
+            "x-dead-letter-routing-key": resolved.ingest_completion_dlq,
+        },
+    )
     channel.queue_declare(queue=resolved.ingest_completion_dlq, durable=True)
     channel.exchange_declare(
         exchange=resolved.ingest_job_exchange,
         exchange_type="direct",
         durable=True,
     )
-    channel.queue_declare(queue=resolved.ingest_job_queue, durable=True)
+    channel.queue_declare(
+        queue=resolved.ingest_job_queue,
+        durable=True,
+        arguments={
+            "x-dead-letter-exchange": "",
+            "x-dead-letter-routing-key": resolved.ingest_job_dlq,
+        },
+    )
+    channel.queue_declare(queue=resolved.ingest_job_dlq, durable=True)
     channel.queue_bind(
         exchange=resolved.ingest_job_exchange,
         queue=resolved.ingest_job_queue,
