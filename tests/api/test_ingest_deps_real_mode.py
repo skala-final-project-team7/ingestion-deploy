@@ -97,6 +97,49 @@ def test_poc_mode_keeps_safe_defaults(monkeypatch: Any) -> None:
     assert deps.run_delta is _poc_empty_delta
 
 
+def test_poc_mode_keeps_credential_lookup_none_when_not_configured(monkeypatch: Any) -> None:
+    monkeypatch.setattr(api_deps, "build_soft_delete_store", lambda settings: FakeQdrantPoolStore())
+    settings = Settings(
+        use_real_adapters=False,
+        source_type="json_fixture",
+        internal_auth_server_base_url="",
+        internal_api_key="",
+    )
+
+    deps = build_ingest_deps(settings)
+
+    assert deps.credential_lookup is None
+
+
+def test_poc_mode_configures_credential_lookup_when_internal_config_present(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(api_deps, "build_soft_delete_store", lambda settings: FakeQdrantPoolStore())
+    # 내부 auth-server base/key 가 있으면 atlassian 모드에서 credential_lookup 을 구성한다.
+    monkeypatch.setattr(
+        api_deps,
+        "build_internal_credential_lookup",
+        lambda settings: lambda admin_user_id: (
+            f"resolved-{admin_user_id}",
+            "resolved-cloud",
+        ),
+    )
+    # build_source_adapter 는 settings bootstrap 시점에서만 사용된다(credential_lookup 구성만 검증).
+    monkeypatch.setattr(api_deps, "build_source_adapter", lambda settings: object())
+
+    settings = Settings(
+        use_real_adapters=False,
+        source_type="atlassian",
+        internal_auth_server_base_url="http://auth-server:8080",
+        internal_api_key="secret",
+    )
+
+    deps = build_ingest_deps(settings)
+
+    assert deps.credential_lookup is not None
+    assert deps.credential_lookup("admin-1") == ("resolved-admin-1", "resolved-cloud")
+
+
 def test_real_crawl_runner_without_any_adapter_fails_loud(monkeypatch: Any) -> None:
     # 요청에도 Settings 에도 자격증명이 없으면 — 무음 성공이 아니라 명시 실패(RuntimeError)
     # 로 잡이 FAILED 기록되어야 한다.

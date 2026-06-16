@@ -35,6 +35,39 @@
 - `./scripts/test.sh`
   - 실행 환경의 `pytest` 바이너리 미설치로 실패 (`pytest not found...`)하여 보조 확인만 수행.
 
+## 2026-06-16 — featureI-8 Step 3 진행: credential lookup 예외 분기/로그 정합 강화
+
+**작업**:
+`app/ingestion/workers/ingestion_worker.py`의 `_resolve_runtime_credentials`를 강화해
+auth-server `credential_lookup` 실패 시 상태코드별 로그 및 실패 동작을 분기 처리했다.
+요청 토큰이 이미 존재하는 legacy 경로에서는 조회 실패 시 fallback 하도록 하고,
+토큰 미전달 모드에서는 조회 실패를 즉시 `RuntimeError`로 전파해 잡 실패로 이어지도록 정리했다.
+
+**변경 범위**
+
+- `app/ingestion/workers/ingestion_worker.py`
+  - `_resolve_runtime_credentials` 상태 분기 추가:
+    - 400: adminUserId 누락/오류 경고
+    - 401: `INTERNAL_API_KEY` 누락/미스매치(의심) 경고
+    - 403: ADMIN 권한 없음 경고
+    - 404: 대상 사용자 없음/미로그인 경고
+    - 5xx: auth-server 처리 실패(재시도 고려) 경고
+  - 상태코드별 처리 후 legacy 토큰이 있으면 폴백, 없으면 런타임 실패로 전환.
+- `tests/ingestion/test_ingestion_worker.py`
+  - `_resolve_runtime_credentials` 상태 분기/폴백 동작 단위 테스트 추가
+    - 400/401/403/404 경로 로그/실패 동작
+    - lookup 성공 우선 적용
+    - 조회 실패 시 legacy 토큰 fallback
+
+**검증**
+
+- `python3.11 -m pytest tests/ingestion/test_ingestion_worker.py`
+  - `17 passed`
+- `python3.11 -m pytest`
+  - `251 passed, 2 skipped`
+- `python3.11 -m ruff check app tests`
+  - 실패: 기존 코드 기준 `E501`/`I001` 다수(요약 34 errors, fixable 5), 신규 변경 전용 치명 실패는 확인되지 않음
+
 ## 2026-06-16 — featureI-8 Step 1 완료: Internal auth-server 호출 설정 추가
 
 **작업**:

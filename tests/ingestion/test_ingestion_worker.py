@@ -6,6 +6,9 @@ COMPLETED/FAILED status 를 발행하는지, payload 에는 민감 정보가 제
 
 from __future__ import annotations
 
+import logging
+
+import httpx
 import pytest
 
 from app.api.deps import IngestDeps
@@ -13,7 +16,11 @@ from app.api.ingest_completion import IngestCompletionEvent
 from app.ingestion.crawler import CrawlRequest, CrawlResult
 from app.ingestion.soft_delete import SoftDeleteResult
 from app.ingestion.sync import DeltaSyncRequest, DeltaSyncResult
-from app.ingestion.workers.ingestion_worker import run_delta_ingest_job, run_ingest_job
+from app.ingestion.workers.ingestion_worker import (
+    _resolve_runtime_credentials,
+    run_delta_ingest_job,
+    run_ingest_job,
+)
 from app.schemas.enums import IngestJobStatus
 
 
@@ -63,6 +70,43 @@ class _FailingDeltaSyncWorker(_FakeSyncWorker):
 
     def apply_delta_deletions(self, result: DeltaSyncResult, *, confirm: bool) -> SoftDeleteResult:
         raise RuntimeError("delta delete failed intentionally")
+
+
+def _http_status_error(status_code: int) -> Exception:
+    request = httpx.Request(
+        "GET",
+        "http://auth-server.local/internal/auth/admin-confluence-credential",
+    )
+    response = httpx.Response(status_code, request=request)
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return exc
+    raise RuntimeError(f"expected http status error: {status_code}")
+
+
+def test_resolve_runtime_credentials_uses_lookup_result_first() -> None:
+    access_token, cloud_id = _resolve_runtime_credentials(
+        "admin-1",
+        access_token="legacy-token",
+        cloud_id="legacy-cloud",
+        credential_lookup=lambda _: ("resolved-token", "resolved-cloud"),
+    )
+
+    assert access_token == "resolved-token"
+    assert cloud_id == "resolved-cloud"
+
+
+def test_resolve_runtime_credentials_uses_payload_credentials_on_internal_lookup_legacy_path() -> None:
+    access_token, cloud_id = _resolve_runtime_credentials(
+        "admin-1",
+        access_token="legacy-token",
+        cloud_id="legacy-cloud",
+        credential_lookup=lambda _: (_ for _ in ()).throw(ValueError("lookup failed")),
+    )
+
+    assert access_token == "legacy-token"
+    assert cloud_id == "legacy-cloud"
 
 
 def test_ingest_completion_event_payload_has_required_fields_and_no_credentials() -> None:
@@ -121,6 +165,50 @@ def test_run_ingest_job_success_publishes_completed_event() -> None:
     assert payload["adminUserId"] == "admin-abc"
     assert payload["mode"] == "full"
     assert "accessToken" not in payload
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [
+        (400, "admin credential lookup 400"),
+        (401, "INTERNAL_API_KEY"),
+        (403, "admin credential lookup 403"),
+        (404, "admin credential lookup 404"),
+    ],
+)
+def test_resolve_runtime_credentials_http_status_by_code_requires_action(
+    status_code: int,
+    expected: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def _lookup(_admin_user_id: str) -> tuple[str, str]:
+        raise _http_status_error(status_code)
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(
+            RuntimeError,
+            match=f"admin credential lookup failed: status_code={status_code}",
+        ):
+            _resolve_runtime_credentials(
+                "admin-1",
+                access_token=None,
+                cloud_id=None,
+                credential_lookup=_lookup,
+            )
+
+    assert any(expected in rec.message for rec in caplog.records)
+
+
+def test_resolve_runtime_credentials_500_status_logs_and_falls_back_to_payload() -> None:
+    access_token, cloud_id = _resolve_runtime_credentials(
+        "admin-1",
+        access_token="legacy-token",
+        cloud_id="legacy-cloud",
+        credential_lookup=lambda _: (_ for _ in ()).throw(_http_status_error(500)),
+    )
+
+    assert access_token == "legacy-token"
+    assert cloud_id == "legacy-cloud"
 
 
 def test_run_ingest_job_success_publishes_completed_event_without_sensitive_fields() -> None:

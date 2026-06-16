@@ -102,21 +102,73 @@ def _resolve_runtime_credentials(
 ) -> tuple[str | None, str | None]:
     """adminUserId 기반 credential 조회를 우선 시도한다.
 
-    credential lookup 실패/미설정 시에도 수집 플로우가 멈추지 않도록 request 필드를
-    fallback 사용한다. 즉, 이 단계에서는 수집 요청 경로(`run_ingest`/`run_delta`)가
-    전달한 token 정보를 우선 보존한다.
+    `credential_lookup` 을 통해 auth-server 내부 credential 조회를 수행한다.
+    상태 분기:
+    - 400: adminUserId 누락/형식 오류
+    - 401: INTERNAL_API_KEY 누락 또는 미스매치
+    - 403: adminUserId가 ADMIN 아님
+    - 404: 사용자 없음/ OAuth 미로그인
 
-    현재 단계에서는 auth-server 미구현 구간이 존재하므로, 조회 실패 시 예외를 전파하지 않고
-    기존 credential(또는 None)을 그대로 사용한다.
+    legacy 경로로 토큰이 이미 전달된 경우에는 lookup 실패 시 폴백하고,
+    토큰 미전달 모드에서는 상태코드 기반 실패를 즉시 상위로 전파한다.
     """
     if credential_lookup is None or not admin_user_id:
         return access_token, cloud_id
 
     try:
         resolved_access_token, resolved_cloud_id = credential_lookup(admin_user_id)
-    except Exception:
-        _LOGGER.exception("admin credential lookup failed: admin_user_id=%s", admin_user_id)
-        return access_token, cloud_id
+    except Exception as exc:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+
+        if status_code == 400:
+            _LOGGER.warning(
+                "admin credential lookup 400: adminUserId 누락/형식 오류. adminUserId=%s",
+                admin_user_id,
+            )
+        elif status_code == 401:
+            _LOGGER.error(
+                "admin credential lookup 401: INTERNAL_API_KEY 누락/미스매치 가능성. "
+                "adminUserId=%s",
+                admin_user_id,
+            )
+        elif status_code == 403:
+            _LOGGER.warning(
+                "admin credential lookup 403: adminUserId가 ADMIN 권한이 아님. adminUserId=%s",
+                admin_user_id,
+            )
+        elif status_code == 404:
+            _LOGGER.warning(
+                "admin credential lookup 404: 해당 adminUserId가 없거나 OAuth 로그인 전 상태. "
+                "adminUserId=%s",
+                admin_user_id,
+            )
+        elif status_code is not None and status_code >= 500:
+            _LOGGER.warning(
+                "admin credential lookup %s: auth-server 처리 실패(재시도 고려). adminUserId=%s",
+                status_code,
+                admin_user_id,
+            )
+        else:
+            _LOGGER.exception(
+                "admin credential lookup failed: adminUserId=%s (status_code=%s)",
+                admin_user_id,
+                status_code,
+            )
+
+        if (access_token is not None or cloud_id is not None) and (
+            status_code is None
+            or status_code in {400, 401, 403, 404}
+            or status_code >= 500
+        ):
+            return access_token, cloud_id
+
+        if status_code is None:
+            raise RuntimeError("admin credential lookup failed with non-http error") from exc
+
+        raise RuntimeError(
+            f"admin credential lookup failed: status_code={status_code}"
+        ) from exc
 
     return resolved_access_token or access_token, resolved_cloud_id or cloud_id
 

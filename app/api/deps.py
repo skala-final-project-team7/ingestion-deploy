@@ -36,6 +36,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -43,17 +44,46 @@ from app.adapters.base import DocumentSourceAdapter
 from app.adapters.factory import build_source_adapter
 from app.api.ingest_completion import IngestCompletionPublisher, NoopIngestCompletionPublisher
 from app.config import Settings
-from app.ingestion.bootstrap import build_soft_delete_store
+from app.ingestion.bootstrap import build_internal_credential_lookup, build_soft_delete_store
 from app.ingestion.crawler import CrawlRequest, CrawlResult
 from app.ingestion.pipeline import run_poc_ingestion
 from app.ingestion.sync import DeltaSyncRequest, DeltaSyncResult
 from app.ingestion.workers.sync_worker import SyncWorker, SyncWorkerDeps
 from app.storage.ingest_jobs import IngestJobStore, InMemoryIngestJobStore
 
+_LOGGER = logging.getLogger(__name__)
+
 # 크롤 러너 시그니처 — ``CrawlRequest`` 를 받아 집계 ``CrawlResult`` 를 돌려준다.
 CrawlRunner = Callable[[CrawlRequest], CrawlResult]
 # Delta 러너 시그니처 — ``DeltaSyncRequest`` 를 받아 집계 ``DeltaSyncResult`` 를 돌려준다.
 DeltaRunner = Callable[[DeltaSyncRequest], DeltaSyncResult]
+CredentialLookup = Callable[[str], tuple[str | None, str | None]]
+
+
+def _build_internal_credential_lookup(settings: Settings) -> CredentialLookup | None:
+    """auth-server credential_lookup seam 을 준비한다.
+
+    운영에서는 adminUserId 기반 credential 조회에 사용한다.
+    bootstrap 설정 미완성 시에는 시작 실패를 피하고 `None` 으로 되돌린다(기존 PoC 경로 유지를 위해).
+    """
+    if settings.source_type.lower() != "atlassian":
+        return None
+    if not settings.internal_auth_server_base_url.strip():
+        _LOGGER.warning(
+            "RAG_INTERNAL_AUTH_SERVER_BASE_URL 비어 있어 auth-server credential lookup 비활성화"
+        )
+        return None
+    if not settings.internal_api_key.get_secret_value():
+        _LOGGER.warning(
+            "RAG_INTERNAL_API_KEY 비어 있어 auth-server credential lookup 비활성화"
+        )
+        return None
+
+    try:
+        return build_internal_credential_lookup(settings)
+    except ValueError:
+        _LOGGER.exception("auth-server credential lookup 클라이언트 구성 실패")
+        return None
 
 
 def _poc_empty_delta(_request: DeltaSyncRequest) -> DeltaSyncResult:
@@ -84,6 +114,9 @@ class IngestDeps:
     # FR-005 — delta 삭제 후보 자동 soft-delete 확인 게이트. 기본 False(후보 surface만);
     # True 시 delta 잡이 apply_delta_deletions(confirm=True)로 soft-delete 한다.
     delta_delete_confirm: bool = False
+    # auth-server 내부 API(``adminUserId`` 기준) credential 조회 seam.
+    # 기본 None 이면 요청으로 전달된 access_token/cloud_id fallback 사용.
+    credential_lookup: CredentialLookup | None = None
 
 
 def build_ingest_deps(settings: Settings) -> IngestDeps:
@@ -109,6 +142,7 @@ def build_ingest_deps(settings: Settings) -> IngestDeps:
     # 소유한다(featureI-5b·FR-005). trash_source 는 주입하지 않는다 — 주기 Trash 동기화는
     # 스케줄러/실행 loop 책임(featureI-7c). store 는 토글에 따라 Fake/실 Qdrant 로 조립된다.
     sync_worker = SyncWorker(SyncWorkerDeps(store=build_soft_delete_store(settings)))
+    credential_lookup = _build_internal_credential_lookup(settings)
 
     if settings.use_real_adapters:
         return _build_real_ingest_deps(settings, sync_worker=sync_worker)
@@ -129,6 +163,7 @@ def build_ingest_deps(settings: Settings) -> IngestDeps:
         completion_publisher=NoopIngestCompletionPublisher(),
         previous_snapshot_path=settings.data_sync_previous_snapshot,
         delta_delete_confirm=settings.data_sync_delta_delete_confirm,
+        credential_lookup=credential_lookup,
     )
 
 
@@ -157,6 +192,7 @@ def _build_real_ingest_deps(settings: Settings, *, sync_worker: SyncWorker) -> I
         fallback_source = None
 
     raw_store = build_raw_page_store(settings)  # Mongo raw_pages/raw_attachments (crawl·delta 공유)
+    credential_lookup = _build_internal_credential_lookup(settings)
 
     return IngestDeps(
         # NOTE(P2): 잡 수명주기 저장소는 단일 인스턴스 전제의 InMemory 다(재시작 시 진행
@@ -170,4 +206,5 @@ def _build_real_ingest_deps(settings: Settings, *, sync_worker: SyncWorker) -> I
         run_delta=build_real_delta_runner(settings, raw_store=raw_store),
         previous_snapshot_path=settings.data_sync_previous_snapshot,
         delta_delete_confirm=settings.data_sync_delta_delete_confirm,
+        credential_lookup=credential_lookup,
     )

@@ -16,6 +16,7 @@ import logging
 import signal
 import time
 from collections.abc import Mapping
+from collections.abc import Callable
 from typing import Any
 from types import FrameType
 
@@ -30,6 +31,15 @@ _RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0, 10.0)
 _MAX_CONSUME_ATTEMPTS = len(_RETRY_BACKOFF_SECONDS)
 _RETRY_HEADER_NAME = "x-retry-count"
 _shutdown_requested = False
+
+
+CredentialLookup = Callable[[str], tuple[str | None, str | None]]
+
+
+def _resolve_credential_lookup(deps: Any) -> CredentialLookup | None:
+    """deps 에서 credential_lookup callable 을 추출한다."""
+    candidate = getattr(deps, "credential_lookup", None)
+    return candidate if callable(candidate) else None
 
 
 def _request_shutdown(signum: int, _frame: FrameType | None) -> None:
@@ -145,6 +155,7 @@ def _parse_message(body: bytes) -> Mapping[str, object]:
 def _consume_until_shutdown(settings: Settings) -> None:
     """RabbitMQ 연결 1회 수명으로 ingest job 큐를 소비한다."""
     deps = build_ingest_deps(settings)
+    credential_lookup = _resolve_credential_lookup(deps)
     connection, channel = open_rabbitmq_channel(settings)
     try:
         channel.basic_qos(prefetch_count=1)
@@ -155,7 +166,7 @@ def _consume_until_shutdown(settings: Settings) -> None:
                 run_ingest_job_from_payload(
                     deps,
                     message,
-                    credential_lookup=getattr(deps, "credential_lookup", None),
+                    credential_lookup=credential_lookup,
                 )
                 channel.basic_ack(method.delivery_tag)
             except Exception as exc:

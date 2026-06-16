@@ -221,6 +221,55 @@ def test_consume_until_shutdown_acks_successful_message(monkeypatch) -> None:
     assert connection.closed is True
 
 
+def test_consume_until_shutdown_passes_credential_lookup(monkeypatch) -> None:
+    class _FakeDeps:
+        @staticmethod
+        def credential_lookup(admin_user_id: str) -> tuple[str, str]:
+            return f"resolved-{admin_user_id}", "resolved-cloud"
+
+    channel = _FakeChannel(
+        [
+            (
+                _FakeMethod(404),
+                _FakeProperties(),
+                b'{"jobId":"job-1","adminUserId":"admin-1","mode":"full","requestedAt":"2026-06-12T00:00:00Z"}',
+            )
+        ]
+    )
+    connection = _FakeConnection()
+    run_calls: list[tuple[dict[str, object], object | None]] = []
+
+    def _fake_run(
+        _deps: object, payload: dict[str, object], credential_lookup: object | None = None
+    ) -> None:
+        run_calls.append((payload, credential_lookup))
+
+    monkeypatch.setattr(ingest_job_main, "build_ingest_deps", lambda settings: _FakeDeps())
+    monkeypatch.setattr(ingest_job_main, "open_rabbitmq_channel", lambda settings: (connection, channel))
+    monkeypatch.setattr(ingest_job_main, "run_ingest_job_from_payload", _fake_run)
+    monkeypatch.setattr(
+        ingest_job_main,
+        "_handle_failure",
+        lambda **kwargs: None,  # type: ignore[misc]
+    )
+
+    ingest_job_main._consume_until_shutdown(Settings(ingest_job_queue="lina.data-ingestion.ingest"))
+
+    assert run_calls == [
+        (
+            {
+                "jobId": "job-1",
+                "adminUserId": "admin-1",
+                "mode": "full",
+                "requestedAt": "2026-06-12T00:00:00Z",
+            },
+            _FakeDeps.credential_lookup,
+        )
+    ]
+    assert channel.acked == [404]
+    assert connection.closed is True
+
+
 def test_consume_until_shutdown_calls_failure_handler_on_worker_error(monkeypatch) -> None:
     channel = _FakeChannel(
         [
