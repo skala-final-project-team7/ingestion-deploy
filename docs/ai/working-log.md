@@ -5,6 +5,54 @@
 
 ---
 
+## 2026-06-16 — featureI-8 Step 1 완료: Internal auth-server 호출 설정 추가
+
+**작업**:
+`app/config.py`에 INGESTION → auth-server 내부 credential 조회 연동을 위한 설정을 추가했다.
+`RAG_INTERNAL_API_KEY`, `RAG_INTERNAL_AUTH_SERVER_BASE_URL`, `RAG_INTERNAL_AUTH_SERVER_ADMIN_CREDENTIAL_PATH`로
+주입 가능한 항목을 `Settings`에 반영했다.
+
+**변경 범위**
+
+- `app/config.py`
+  - `internal_api_key: SecretStr = SecretStr("")` 추가
+  - `internal_auth_server_base_url: str = ""` 추가
+  - `internal_auth_server_admin_credential_path: str = "/internal/auth/admin-confluence-credential"` 추가
+  - 변경 이력(`변경사항 내역`)에 항목 추가
+
+**검증**
+
+- `./scripts/test.sh`
+  - `pytest not found. Install pytest or adjust scripts/test.sh.`로 실행 실패
+- `python3 -m pytest --version`
+  - `No module named pytest`
+
+**비고**
+
+- 실행 환경에 테스트 런타임이 없어 실제 테스트 pass/fail 판단은 보류. pytest 설치 후 재실행 필요.
+
+## 2026-06-16 — featureI-8 Step 1: 테스트 환경 구성 후 전체 테스트 재실행
+
+**작업**:
+Python 3.11 가상환경을 생성해 `.[ingestion,dev]` 의존성을 설치한 뒤 `./scripts/test.sh`로 전체 테스트를 재실행했다.
+
+**검증**
+
+- `python3.11 -m venv .venv` 후 `pip install -e ".[ingestion,dev]"`
+- `./scripts/test.sh`
+  - `240`개 수집
+  - `219` passed, `2` skipped, `19` failed
+- 실패 위치:
+  - `tests/api/test_ingest_route.py` (12개 실패)
+  - `tests/api/test_webhook_route.py` (7개 실패)
+- 공통 원인:
+  - `prometheus_fastapi_instrumentator` + 현재 라우팅 객체 호환성(`AttributeError: '_IncludedRouter' object has no attribute 'path'`)
+
+**비고**
+
+- 실패는 이번 변경 건(FeatureI-8 Step 1)과 무관한 의존성 호환성/미들웨어 실패로 보임.
+- 실패 해결 시 `featureI-8` 변경 반영 이후의 API 테스트 재검증 필요.
+
 ## 2026-06-11 — featureI-7c Step 1 완료: completion 이벤트 DTO/스키마 정합
 
 ## 2026-06-12 — featureI-7c Step 10 완료: ingest job DLQ 정책 반영 + 전체 테스트 검증
