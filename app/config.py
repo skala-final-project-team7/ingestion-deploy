@@ -35,6 +35,7 @@
     admin_atlassian_credential.site_url 한 곳에만 저장하고(§2-5 JSON `siteUrl` 로 전달,
     public_site_url 별도 명칭 없음), 본 설정은 그 값의 env 주입 지점이다. 용도 ①
     admin-key 호출 대상 site ② webui_link absolute 정규화 base(출처 링크).
+  - 2026-06-16, featureI-8 1차 — INGESTION → auth-server 내부 호출용 INTERNAL API KEY 및 base/path 설정 추가.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, Pydantic 2.7+, pydantic-settings 2.3+
@@ -122,6 +123,15 @@ class Settings(BaseSettings):
     # 이 토큰이 실제 검색 허용이 되려면 RAG build_acl_filter가 동일 토큰을 모든
     # principal 그룹에 주입해야 한다(ingestion↔rag 공유 계약 — docs/db-schema.md §1.4).
     atlassian_public_acl_group: str = "*"
+
+    # --- Internal auth-server 연동 (INGESTION → auth-server internal credential 조회) ---
+    # Worker 가 auth-server 내부 API 호출 시 사용할 X-Internal-Api-Key 는 환경변수로 주입한다.
+    # 비어 있으면 featureI-8 fail-fast/운영 정책에서 별도 대응한다.
+    internal_api_key: SecretStr = SecretStr("")
+    # auth-server 내부 API 호출 base URL (예: http://auth-server:8080)
+    internal_auth_server_base_url: str = ""
+    # internal credential 조회 경로 (호출 시 query string 없이 기본 경로만 결합해 사용)
+    internal_auth_server_admin_credential_path: str = "/internal/auth/admin-confluence-credential"
 
     # --- Qdrant Multi-Pool Vector Store ---
     qdrant_host: str = "localhost"
