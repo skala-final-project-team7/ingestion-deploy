@@ -40,6 +40,29 @@
   legacy 토큰 미전달 모드에서는 401이 발생해도 크롤/처리 단계로 진행되지 않고 완료 이벤트 실패로 종료됨.
   (기존 테스트 `test_run_ingest_job_fail_fast_when_lookup_missing_internal_key_and_no_legacy_token` 기준 정합)
 
+## 2026-06-16 — featureI-8 Step 6 진행: 내부 credential 조회 정상응답 연동 통합 테스트
+
+**작업**:
+`run_ingest_job`에서 `credential_lookup` 정상 응답이 실제 수집 실행 파라미터에 반영되는지
+검증하는 통합 테스트를 추가했다. legacy 토큰이 이미 존재해도 내부 조회값이 우선 채택되는 경로를
+고정했다.
+
+**변경 범위**
+
+- `tests/ingestion/test_ingestion_worker.py`
+  - `test_run_ingest_job_resolves_credentials_and_passes_to_crawl_request` 추가
+    - 조회 성공 결과(`resolved-token`, `resolved-cloud`)가 `run_crawl` 호출의 요청값으로 전달되는지 확인.
+
+**검증**
+
+- 부분 테스트: `python3.11 -m pytest tests/ingestion/test_ingestion_worker.py -q`
+  - `22 passed`
+- 전체 테스트: `python3.11 -m pytest`
+  - `256 passed, 2 skipped`
+- Linter: `python3.11 -m ruff check app tests`
+  - 기존 프로젝트 기준 `E501`/`I001`/`UP037` 다수(34 errors, fixable 5) 유지
+  - 이번 항목으로 추가된 신규 린터 실패 없음.
+
 **작업**:
 `app/ingestion/bootstrap.py`에 `auth-server` 내부 호출 공용 request seam와
 `adminUserId` 기반 `credential_lookup` 팩토리를 추가했다. `GET /internal/auth/admin-confluence-credential`

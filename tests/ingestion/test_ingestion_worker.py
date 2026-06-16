@@ -184,6 +184,41 @@ def test_run_ingest_job_success_publishes_completed_event() -> None:
     assert "accessToken" not in payload
 
 
+def test_run_ingest_job_resolves_credentials_and_passes_to_crawl_request() -> None:
+    store = _FakeJobStore()
+    completion_publisher = _FakeCompletionPublisher()
+    run_requests: list[CrawlRequest] = []
+
+    def _run_crawl(request: CrawlRequest) -> CrawlResult:
+        run_requests.append(request)
+        return CrawlResult(space_key="CLOUD", pages_collected=1, failed_page_ids=[])
+
+    deps = IngestDeps(
+        job_store=store,
+        run_crawl=_run_crawl,
+        sync_worker=_FakeSyncWorker(),
+        completion_publisher=completion_publisher,
+    )
+
+    run_ingest_job(
+        deps,
+        job_id="job-lookup-success",
+        mode="full",
+        crawl_request=CrawlRequest(
+            admin_user_id="admin-1",
+            access_token="legacy-token",
+            cloud_id="legacy-cloud",
+        ),
+        credential_lookup=lambda _: ("resolved-token", "resolved-cloud"),
+    )
+
+    assert len(run_requests) == 1
+    assert run_requests[0].admin_user_id == "admin-1"
+    assert run_requests[0].access_token == "resolved-token"
+    assert run_requests[0].cloud_id == "resolved-cloud"
+    assert completion_publisher.events[0].to_payload()["status"] == "COMPLETED"
+
+
 @pytest.mark.parametrize(
     ("status_code", "expected"),
     [
