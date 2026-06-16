@@ -7,6 +7,39 @@
 
 ## 2026-06-16 — featureI-8 Step 2 진행: internal auth-server credential lookup client/팩토리 추가
 
+## 2026-06-16 — featureI-8 Step 4 진행: credential 조회 예외 처리 정합(동작 경계) 보완
+
+**작업**:
+`_resolve_runtime_credentials`의 정상 경로 반환 누락과 `run_ingest_job`/`run_delta_ingest_job`에서
+`credential_lookup` 예외가 바깥으로 탈출하던 구간을 함께 보완해, 실패 전파 경로를 완료 이벤트 보장 경로에
+일관되게 수렴되도록 했다.
+
+**변경 범위**
+
+- `app/ingestion/workers/ingestion_worker.py`
+  - `_resolve_runtime_credentials`에서 조회 성공 시 `return`이 항상 반환되도록 정리.
+  - `run_ingest_job`의 `access_token/cloud_id` 조회/`request` 구성/`run_crawl` 구간을 동일 `try` 블록으로 묶어
+    `lookup` 실패도 `FAILED` completion 경로로 처리.
+  - `run_delta_ingest_job`도 동일하게 `credential_lookup` 실패를 `FAILED` completion 경로로 수렴.
+- `tests/ingestion/test_ingestion_worker.py`
+  - 선행 단계에서 추가한 `401` 메시지 분류/로그 및 상태 분기 테스트가 전체 실행에 통합되어 있는지 재점검.
+
+**검증**
+
+- 부분 테스트: `python3.11 -m pytest tests/ingestion/test_ingestion_worker.py -q`
+  - `21 passed`
+- 전체 테스트: `python3.11 -m pytest`
+  - `255 passed, 2 skipped`
+- Linter: `python3.11 -m ruff check app tests`
+  - 실패: 기존 라인 기준으로 `E501`/`I001`/`UP037` 다수 존재(34 errors, fixable 5)
+  - 신규 수정 건에서 추가된 치명 실패는 보이지 않음(기존 정합성 위반과 구분해 처리 필요)
+
+**비고**
+
+- `run_ingest_job`에서 `lookup` 실패가 잡 단위 실패 이벤트로 정상 수렴되며,
+  legacy 토큰 미전달 모드에서는 401이 발생해도 크롤/처리 단계로 진행되지 않고 완료 이벤트 실패로 종료됨.
+  (기존 테스트 `test_run_ingest_job_fail_fast_when_lookup_missing_internal_key_and_no_legacy_token` 기준 정합)
+
 **작업**:
 `app/ingestion/bootstrap.py`에 `auth-server` 내부 호출 공용 request seam와
 `adminUserId` 기반 `credential_lookup` 팩토리를 추가했다. `GET /internal/auth/admin-confluence-credential`

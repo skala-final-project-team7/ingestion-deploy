@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -120,6 +121,7 @@ def _resolve_runtime_credentials(
     except Exception as exc:
         response = getattr(exc, "response", None)
         status_code = getattr(response, "status_code", None)
+        detail_message = _extract_response_error_message(response)
 
         if status_code == 400:
             _LOGGER.warning(
@@ -127,11 +129,22 @@ def _resolve_runtime_credentials(
                 admin_user_id,
             )
         elif status_code == 401:
-            _LOGGER.error(
-                "admin credential lookup 401: INTERNAL_API_KEY 누락/미스매치 가능성. "
-                "adminUserId=%s",
-                admin_user_id,
-            )
+            if detail_message and "missing" in detail_message:
+                _LOGGER.warning(
+                    "admin credential lookup 401: INTERNAL_API_KEY 누락. adminUserId=%s",
+                    admin_user_id,
+                )
+            elif detail_message and "mismatch" in detail_message:
+                _LOGGER.warning(
+                    "admin credential lookup 401: INTERNAL_API_KEY 미스매치. adminUserId=%s",
+                    admin_user_id,
+                )
+            else:
+                _LOGGER.error(
+                    "admin credential lookup 401: INTERNAL_API_KEY 누락/미스매치 확인 필요. "
+                    "adminUserId=%s",
+                    admin_user_id,
+                )
         elif status_code == 403:
             _LOGGER.warning(
                 "admin credential lookup 403: adminUserId가 ADMIN 권한이 아님. adminUserId=%s",
@@ -171,6 +184,35 @@ def _resolve_runtime_credentials(
         ) from exc
 
     return resolved_access_token or access_token, resolved_cloud_id or cloud_id
+
+
+def _extract_response_error_message(response: object | None) -> str | None:
+    """auth-server 오류 본문에서 사용자 메시지를 추출한다.
+
+    auth-server 테스트 더블에서 body 가 JSON인지, plain text인지 구분해 메시지만 안전하게
+    추출한다. 파싱 실패 시 raw text 를 반환한다.
+    """
+    if response is None:
+        return None
+    text = getattr(response, "text", None)
+    if not isinstance(text, str):
+        return None
+
+    body = text.strip()
+    if not body:
+        return None
+
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return body
+
+    if isinstance(payload, dict):
+        for key in ("message", "error", "detail", "description"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip().lower()
+    return body.lower()
 
 
 def publish_ingest_completion(
@@ -299,21 +341,20 @@ def run_ingest_job(
     """
     deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
 
-    access_token, cloud_id = _resolve_runtime_credentials(
-        crawl_request.admin_user_id,
-        access_token=crawl_request.access_token,
-        cloud_id=crawl_request.cloud_id,
-        credential_lookup=credential_lookup,
-    )
-
-    request = CrawlRequest(
-        space_key=crawl_request.space_key,
-        admin_user_id=crawl_request.admin_user_id,
-        access_token=access_token,
-        cloud_id=cloud_id,
-    )
-
     try:
+        access_token, cloud_id = _resolve_runtime_credentials(
+            crawl_request.admin_user_id,
+            access_token=crawl_request.access_token,
+            cloud_id=crawl_request.cloud_id,
+            credential_lookup=credential_lookup,
+        )
+
+        request = CrawlRequest(
+            space_key=crawl_request.space_key,
+            admin_user_id=crawl_request.admin_user_id,
+            access_token=access_token,
+            cloud_id=cloud_id,
+        )
         result = deps.run_crawl(request)
     except Exception as exc:  # noqa: BLE001 — 잡 단위 예외 격리
         _LOGGER.exception("ingest job failed: job_id=%s", job_id)
@@ -361,21 +402,20 @@ def run_delta_ingest_job(
     """
     deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
 
-    access_token, cloud_id = _resolve_runtime_credentials(
-        delta_request.admin_user_id,
-        access_token=delta_request.access_token,
-        cloud_id=delta_request.cloud_id,
-        credential_lookup=credential_lookup,
-    )
-
-    request = DeltaSyncRequest(
-        previous_snapshot_path=delta_request.previous_snapshot_path,
-        access_token=access_token,
-        cloud_id=cloud_id,
-        admin_user_id=delta_request.admin_user_id,
-    )
-
     try:
+        access_token, cloud_id = _resolve_runtime_credentials(
+            delta_request.admin_user_id,
+            access_token=delta_request.access_token,
+            cloud_id=delta_request.cloud_id,
+            credential_lookup=credential_lookup,
+        )
+
+        request = DeltaSyncRequest(
+            previous_snapshot_path=delta_request.previous_snapshot_path,
+            access_token=access_token,
+            cloud_id=cloud_id,
+            admin_user_id=delta_request.admin_user_id,
+        )
         result = deps.run_delta(request)
     except Exception as exc:  # noqa: BLE001 — 잡 단위 예외 격리
         _LOGGER.exception("delta ingest job failed: job_id=%s", job_id)

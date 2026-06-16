@@ -6,6 +6,7 @@ COMPLETED/FAILED status 를 발행하는지, payload 에는 민감 정보가 제
 
 from __future__ import annotations
 
+import json
 import logging
 
 import httpx
@@ -78,6 +79,22 @@ def _http_status_error(status_code: int) -> Exception:
         "http://auth-server.local/internal/auth/admin-confluence-credential",
     )
     response = httpx.Response(status_code, request=request)
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        return exc
+
+
+def _http_status_error_with_message(status_code: int, message: str) -> Exception:
+    request = httpx.Request(
+        "GET",
+        "http://auth-server.local/internal/auth/admin-confluence-credential",
+    )
+    response = httpx.Response(
+        status_code,
+        content=json.dumps({"message": message}),
+        request=request,
+    )
     try:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
@@ -197,6 +214,106 @@ def test_resolve_runtime_credentials_http_status_by_code_requires_action(
             )
 
     assert any(expected in rec.message for rec in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("INTERNAL_API_KEY header missing", "누락"),
+        ("INTERNAL_API_KEY mismatch", "미스매치"),
+    ],
+)
+def test_resolve_runtime_credentials_401_missing_and_mismatch_log_classification(
+    message: str,
+    expected: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def _lookup(_admin_user_id: str) -> tuple[str, str]:
+        raise _http_status_error_with_message(401, message)
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(RuntimeError, match="admin credential lookup failed: status_code=401"):
+            _resolve_runtime_credentials(
+                "admin-1",
+                access_token=None,
+                cloud_id=None,
+                credential_lookup=_lookup,
+            )
+
+    assert any(expected in rec.message for rec in caplog.records)
+
+
+def test_run_ingest_job_fail_fast_when_lookup_missing_internal_key_and_no_legacy_token() -> None:
+    store = _FakeJobStore()
+    completion_publisher = _FakeCompletionPublisher()
+    run_crawl_calls: list[CrawlRequest] = []
+
+    def _run_crawl(request: CrawlRequest) -> CrawlResult:
+        run_crawl_calls.append(request)
+        return CrawlResult(space_key="CLOUD", pages_collected=1, failed_page_ids=[])
+
+    deps = IngestDeps(
+        job_store=store,
+        run_crawl=_run_crawl,
+        sync_worker=_FakeSyncWorker(),
+        completion_publisher=completion_publisher,
+    )
+
+    run_ingest_job(
+        deps,
+        job_id="job-failfast",
+        mode="full",
+        crawl_request=CrawlRequest(admin_user_id="admin-1"),
+        credential_lookup=lambda _admin_user_id: (_ for _ in ()).throw(
+            _http_status_error(401),
+        ),
+    )
+
+    assert not run_crawl_calls
+    assert store.updates[0][0] == "job-failfast"
+    assert store.updates[0][1]["status"] == IngestJobStatus.IN_PROGRESS
+    assert store.updates[-1][1]["status"] == IngestJobStatus.FAILED
+    [published] = completion_publisher.events
+    payload = published.to_payload()
+    assert payload["status"] == "FAILED"
+    assert payload["errorCode"] == "INGEST_FAILED"
+    assert "admin credential lookup failed" in str(payload["message"])
+
+
+def test_run_ingest_job_falls_back_to_legacy_tokens_when_lookup_fails() -> None:
+    store = _FakeJobStore()
+    completion_publisher = _FakeCompletionPublisher()
+    run_requests: list[CrawlRequest] = []
+
+    def _run_crawl(request: CrawlRequest) -> CrawlResult:
+        run_requests.append(request)
+        return CrawlResult(space_key="CLOUD", pages_collected=1, failed_page_ids=[])
+
+    deps = IngestDeps(
+        job_store=store,
+        run_crawl=_run_crawl,
+        sync_worker=_FakeSyncWorker(),
+        completion_publisher=completion_publisher,
+    )
+
+    run_ingest_job(
+        deps,
+        job_id="job-legacy-fallback",
+        mode="full",
+        crawl_request=CrawlRequest(
+            admin_user_id="admin-1",
+            access_token="legacy-token",
+            cloud_id="legacy-cloud",
+        ),
+        credential_lookup=lambda _admin_user_id: (_ for _ in ()).throw(
+            _http_status_error_with_message(401, "INTERNAL_API_KEY missing"),
+        ),
+    )
+
+    assert run_requests[0].access_token == "legacy-token"
+    assert run_requests[0].cloud_id == "legacy-cloud"
+    [published] = completion_publisher.events
+    assert published.to_payload()["status"] == "COMPLETED"
 
 
 def test_resolve_runtime_credentials_500_status_logs_and_falls_back_to_payload() -> None:
