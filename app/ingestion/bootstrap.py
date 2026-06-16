@@ -48,13 +48,16 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from app.config import Settings, get_settings
 from app.ingestion.embedder.base import FakeDenseEmbedder, FakeSparseEmbedder
 from app.ingestion.sync import DeltaSyncRequest, DeltaSyncResult
 from app.ingestion.workers.chunking_worker import ChunkingWorkerDeps
-from app.ingestion.workers.publisher import QueuePublisher
+from app.ingestion.workers.publisher import (
+    _DEFAULT_ROUTING_KEY,
+    QueuePublisher,
+)
 from app.storage.jobs import FakeIngestionJobsRepository
 from app.storage.mongo_cache import FakeEmbeddingCache
 from app.storage.qdrant_fake import FakeQdrantPoolStore
@@ -69,6 +72,89 @@ if TYPE_CHECKING:
     from app.ingestion.soft_delete import SoftDeleteStore
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _normalize_internal_auth_server_path(raw_path: str) -> str:
+    """auth-server 내부 호출 path를 `/` 로 정규화한다."""
+    path = (raw_path or "").strip()
+    if not path:
+        return "/internal/auth/admin-confluence-credential"
+    return path if path.startswith("/") else f"/{path}"
+
+
+def _is_internal_api_path(path: str) -> bool:
+    """내부 API path 판별."""
+    return path.startswith("/internal/")
+
+
+def build_auth_server_requester(
+    settings: Settings | None = None,
+    *,
+    client: Any | None = None,
+) -> Callable[[str, dict[str, object] | None], Any]:
+    """auth-server 공통 요청 헬퍼를 조립한다.
+
+    인입 path 가 `/internal/...` 이면 `X-Internal-Api-Key` 헤더를 주입한다.
+    공개 API path 에는 헤더를 붙이지 않으므로 기존 credential/admin-key path 혼재 시에도
+    호출 오염이 없다.
+    """
+    import httpx
+
+    resolved = settings or get_settings()
+    base_url = resolved.internal_auth_server_base_url.strip()
+    if not base_url:
+        raise ValueError("RAG_INTERNAL_AUTH_SERVER_BASE_URL is required")
+
+    auth_key = resolved.internal_api_key.get_secret_value()
+    request_client = client or httpx.Client(base_url=base_url.rstrip("/"))
+
+    def _request(
+        path: str,
+        params: dict[str, object] | None = None,
+    ) -> Any:
+        request_headers: dict[str, str] = {}
+        if _is_internal_api_path(path) and auth_key:
+            request_headers["X-Internal-Api-Key"] = auth_key
+        response = request_client.get(
+            path,
+            params=cast(Any, params),
+            headers=request_headers or None,
+        )
+        return response
+
+    return _request
+
+
+def build_internal_credential_lookup(
+    settings: Settings | None = None,
+    *,
+    request: Callable[[str, dict[str, object] | None], Any] | None = None,
+) -> Callable[[str], tuple[str | None, str | None]]:
+    """`adminUserId` 기반 `/internal/auth/admin-confluence-credential` 조회 callable 을 만든다.
+
+    반환 callable 시그니처는 기존 `credential_lookup` seam(`Callable[[str],
+    tuple[str|None, str|None]]`) 와 동일하며, auth-server 계약 응답의
+    `accessToken/cloudId/siteUrl/expiresAt` 중 credential 값만 전달한다.
+    """
+    resolved = settings or get_settings()
+    requester = request or build_auth_server_requester(resolved)
+
+    credential_path = _normalize_internal_auth_server_path(
+        resolved.internal_auth_server_admin_credential_path
+    )
+
+    def _lookup(admin_user_id: str) -> tuple[str | None, str | None]:
+        response = requester(credential_path, {"adminUserId": admin_user_id})
+        response.raise_for_status()
+        payload = response.json()
+        access_token = payload.get("accessToken")
+        cloud_id = payload.get("cloudId")
+        return (
+            access_token if isinstance(access_token, str) else None,
+            cloud_id if isinstance(cloud_id, str) else None,
+        )
+
+    return _lookup
 
 
 def _warn_if_site_url_missing(settings: Settings) -> None:
@@ -496,7 +582,12 @@ class _PerPublishPikaPublisher(QueuePublisher):
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    def publish(self, *, routing_key: str, message: dict[str, object]) -> None:
+    def publish(
+        self,
+        *,
+        routing_key: str = _DEFAULT_ROUTING_KEY,
+        message: dict[str, Any],
+    ) -> None:
         from app.ingestion.workers.publisher import PikaQueuePublisher
 
         connection, channel = open_rabbitmq_channel(self._settings)

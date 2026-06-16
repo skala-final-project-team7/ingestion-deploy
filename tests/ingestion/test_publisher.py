@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import cast
 
 import pytest
 
 from app.ingestion.workers.publisher import (
+    _PUBLISH_RETRY_ATTEMPTS,
     FakeQueuePublisher,
     PikaQueuePublisher,
-    _PUBLISH_RETRY_ATTEMPTS,
 )
 
 
@@ -20,7 +21,9 @@ class _FakePikaChannel:
         self.calls: list[dict[str, object]] = []
         self.published = 0
 
-    def basic_publish(self, *, exchange: str, routing_key: str, body: bytes, properties: object) -> None:
+    def basic_publish(
+        self, *, exchange: str, routing_key: str, body: bytes, properties: object
+    ) -> None:
         self.published += 1
         self.calls.append(
             {
@@ -69,11 +72,13 @@ def test_pika_queue_publisher_retries_until_success() -> None:
 
     assert channel.published == 2
     assert channel.calls[0]["routing_key"] == "rk"
-    payload = json.loads(channel.calls[-1]["body"].decode("utf-8"))
+    payload = json.loads(cast(bytes, channel.calls[-1]["body"]).decode("utf-8"))
     assert payload["jobId"] == "job-1"
 
 
-def test_pika_queue_publisher_raises_after_retries_and_logs_without_secrets(caplog: pytest.LogCaptureFixture) -> None:
+def test_pika_queue_publisher_raises_after_retries_and_logs_without_secrets(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     channel = _FakePikaChannel(fail_times=3)
     publisher = PikaQueuePublisher(channel)
     message = {
@@ -84,7 +89,10 @@ def test_pika_queue_publisher_raises_after_retries_and_logs_without_secrets(capl
         "adminEmail": "admin@example.com",
     }
 
-    with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="temporary publish failure"):
+    with (
+        caplog.at_level(logging.WARNING),
+        pytest.raises(RuntimeError, match="temporary publish failure"),
+    ):
         publisher.publish(
             routing_key="rk",
             message=message,

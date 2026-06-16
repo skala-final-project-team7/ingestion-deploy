@@ -15,9 +15,9 @@ import json
 import logging
 import signal
 import time
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Callable, Mapping
 from types import FrameType
+from typing import Any
 
 from app.api.deps import build_ingest_deps
 from app.config import Settings, get_settings
@@ -30,6 +30,15 @@ _RETRY_BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0, 10.0)
 _MAX_CONSUME_ATTEMPTS = len(_RETRY_BACKOFF_SECONDS)
 _RETRY_HEADER_NAME = "x-retry-count"
 _shutdown_requested = False
+
+
+CredentialLookup = Callable[[str], tuple[str | None, str | None]]
+
+
+def _resolve_credential_lookup(deps: Any) -> CredentialLookup | None:
+    """deps 에서 credential_lookup callable 을 추출한다."""
+    candidate = getattr(deps, "credential_lookup", None)
+    return candidate if callable(candidate) else None
 
 
 def _request_shutdown(signum: int, _frame: FrameType | None) -> None:
@@ -115,7 +124,8 @@ def _handle_failure(
             return
         except Exception as publish_error:
             _LOGGER.exception(
-                "ingest job retry publish 실패 — DLQ로 이동: queue=%s retry_count=%d publish_error=%r",
+                "ingest job retry publish 실패 — DLQ로 이동: "
+                "queue=%s retry_count=%d publish_error=%r",
                 queue,
                 retry_count,
                 publish_error,
@@ -145,17 +155,20 @@ def _parse_message(body: bytes) -> Mapping[str, object]:
 def _consume_until_shutdown(settings: Settings) -> None:
     """RabbitMQ 연결 1회 수명으로 ingest job 큐를 소비한다."""
     deps = build_ingest_deps(settings)
+    credential_lookup = _resolve_credential_lookup(deps)
     connection, channel = open_rabbitmq_channel(settings)
     try:
         channel.basic_qos(prefetch_count=1)
-        _LOGGER.info("RabbitMQ 연결 완료 — ingest job 소비 시작: queue=%s", settings.ingest_job_queue)
+        _LOGGER.info(
+            "RabbitMQ 연결 완료 — ingest job 소비 시작: queue=%s", settings.ingest_job_queue
+        )
         for method, properties, body in channel.consume(settings.ingest_job_queue, auto_ack=False):
             try:
                 message = _parse_message(body)
                 run_ingest_job_from_payload(
                     deps,
                     message,
-                    credential_lookup=getattr(deps, "credential_lookup", None),
+                    credential_lookup=credential_lookup,
                 )
                 channel.basic_ack(method.delivery_tag)
             except Exception as exc:

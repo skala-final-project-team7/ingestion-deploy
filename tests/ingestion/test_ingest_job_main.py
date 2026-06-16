@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from app.config import Settings
@@ -34,7 +36,12 @@ class _FakeProperties:
 
 
 class _FakeChannel:
-    def __init__(self, bodies: list[tuple[_FakeMethod, _FakeProperties, bytes]], *, publish_fail: bool = False) -> None:
+    def __init__(
+        self,
+        bodies: list[tuple[_FakeMethod, _FakeProperties, bytes]],
+        *,
+        publish_fail: bool = False,
+    ) -> None:
         self._bodies = list(bodies)
         self.publish_fail = publish_fail
         self.acked: list[int] = []
@@ -56,7 +63,9 @@ class _FakeChannel:
     def basic_reject(self, delivery_tag: int, requeue: bool) -> None:
         self.rejected.append((delivery_tag, requeue))
 
-    def basic_publish(self, *, exchange: str, routing_key: str, body: bytes, properties: object) -> None:
+    def basic_publish(
+        self, *, exchange: str, routing_key: str, body: bytes, properties: object
+    ) -> None:
         if self.publish_fail:
             raise RuntimeError("publish failed")
         self.published.append(
@@ -109,7 +118,7 @@ def test_publish_retry_message_updates_retry_header() -> None:
     assert channel.published[0]["exchange"] == ""
     assert channel.published[0]["routing_key"] == "lina.data-ingestion.ingest"
     assert channel.published[0]["body"] == b'{"jobId":"job-1"}'
-    published_properties = channel.published[0]["properties"]
+    published_properties = cast(_FakeProperties, channel.published[0]["properties"])
     assert getattr(published_properties, "content_type", None) == "application/json"
     assert getattr(published_properties, "delivery_mode", None) == 2
     assert published_properties.headers == {"x-retry-count": 3, "keep": "v"}
@@ -135,10 +144,8 @@ def test_handle_failure_retries_when_retry_count_remaining(monkeypatch) -> None:
     assert channel.acked == [7]
     assert channel.rejected == []
     assert len(channel.published) == 1
-    assert (
-        channel.published[0]["properties"].headers
-        == {"x-retry-count": 1}
-    )
+    published_properties = cast(_FakeProperties, channel.published[0]["properties"])
+    assert published_properties.headers == {"x-retry-count": 1}
 
 
 def test_handle_failure_rejects_when_publish_fails_and_dlq_marked(monkeypatch) -> None:
@@ -193,11 +200,15 @@ def test_consume_until_shutdown_acks_successful_message(monkeypatch) -> None:
     run_calls: list[dict[str, object]] = []
     handle_calls: list[dict[str, object]] = []
 
-    def _fake_run(_deps: object, payload: dict[str, object], credential_lookup: object | None) -> None:
+    def _fake_run(
+        _deps: object, payload: dict[str, object], credential_lookup: object | None
+    ) -> None:
         run_calls.append(payload)
 
     monkeypatch.setattr(ingest_job_main, "build_ingest_deps", lambda settings: object())
-    monkeypatch.setattr(ingest_job_main, "open_rabbitmq_channel", lambda settings: (connection, channel))
+    monkeypatch.setattr(
+        ingest_job_main, "open_rabbitmq_channel", lambda settings: (connection, channel)
+    )
     monkeypatch.setattr(ingest_job_main, "run_ingest_job_from_payload", _fake_run)
     monkeypatch.setattr(
         ingest_job_main,
@@ -221,6 +232,57 @@ def test_consume_until_shutdown_acks_successful_message(monkeypatch) -> None:
     assert connection.closed is True
 
 
+def test_consume_until_shutdown_passes_credential_lookup(monkeypatch) -> None:
+    class _FakeDeps:
+        @staticmethod
+        def credential_lookup(admin_user_id: str) -> tuple[str, str]:
+            return f"resolved-{admin_user_id}", "resolved-cloud"
+
+    channel = _FakeChannel(
+        [
+            (
+                _FakeMethod(404),
+                _FakeProperties(),
+                b'{"jobId":"job-1","adminUserId":"admin-1","mode":"full","requestedAt":"2026-06-12T00:00:00Z"}',
+            )
+        ]
+    )
+    connection = _FakeConnection()
+    run_calls: list[tuple[dict[str, object], object | None]] = []
+
+    def _fake_run(
+        _deps: object, payload: dict[str, object], credential_lookup: object | None = None
+    ) -> None:
+        run_calls.append((payload, credential_lookup))
+
+    monkeypatch.setattr(ingest_job_main, "build_ingest_deps", lambda settings: _FakeDeps())
+    monkeypatch.setattr(
+        ingest_job_main, "open_rabbitmq_channel", lambda settings: (connection, channel)
+    )
+    monkeypatch.setattr(ingest_job_main, "run_ingest_job_from_payload", _fake_run)
+    monkeypatch.setattr(
+        ingest_job_main,
+        "_handle_failure",
+        lambda **kwargs: None,  # type: ignore[misc]
+    )
+
+    ingest_job_main._consume_until_shutdown(Settings(ingest_job_queue="lina.data-ingestion.ingest"))
+
+    assert run_calls == [
+        (
+            {
+                "jobId": "job-1",
+                "adminUserId": "admin-1",
+                "mode": "full",
+                "requestedAt": "2026-06-12T00:00:00Z",
+            },
+            _FakeDeps.credential_lookup,
+        )
+    ]
+    assert channel.acked == [404]
+    assert connection.closed is True
+
+
 def test_consume_until_shutdown_calls_failure_handler_on_worker_error(monkeypatch) -> None:
     channel = _FakeChannel(
         [
@@ -234,11 +296,15 @@ def test_consume_until_shutdown_calls_failure_handler_on_worker_error(monkeypatc
     connection = _FakeConnection()
     handle_calls: list[dict[str, object]] = []
 
-    def _fake_run(_deps: object, _payload: dict[str, object], credential_lookup: object | None = None) -> None:
+    def _fake_run(
+        _deps: object, _payload: dict[str, object], credential_lookup: object | None = None
+    ) -> None:
         raise RuntimeError("downstream failed")
 
     monkeypatch.setattr(ingest_job_main, "build_ingest_deps", lambda settings: object())
-    monkeypatch.setattr(ingest_job_main, "open_rabbitmq_channel", lambda settings: (connection, channel))
+    monkeypatch.setattr(
+        ingest_job_main, "open_rabbitmq_channel", lambda settings: (connection, channel)
+    )
     monkeypatch.setattr(ingest_job_main, "run_ingest_job_from_payload", _fake_run)
     monkeypatch.setattr(
         ingest_job_main,
@@ -252,8 +318,8 @@ def test_consume_until_shutdown_calls_failure_handler_on_worker_error(monkeypatc
 
     assert len(handle_calls) == 1
     assert handle_calls[0]["queue"] == "lina.data-ingestion.ingest"
-    assert handle_calls[0]["method"].delivery_tag == 202
-    assert handle_calls[0]["error"].args[0] == "downstream failed"
+    assert cast(_FakeMethod, handle_calls[0]["method"]).delivery_tag == 202
+    assert cast(Exception, handle_calls[0]["error"]).args[0] == "downstream failed"
     assert channel.acked == []
     assert connection.closed is True
 
@@ -271,11 +337,15 @@ def test_consume_until_shutdown_calls_failure_handler_on_parse_error(monkeypatch
     connection = _FakeConnection()
     handle_calls: list[dict[str, object]] = []
 
-    def _fake_run(_deps: object, _payload: dict[str, object], credential_lookup: object | None = None) -> None:
+    def _fake_run(
+        _deps: object, _payload: dict[str, object], credential_lookup: object | None = None
+    ) -> None:
         raise AssertionError("run_ingest_job_from_payload should not be called for parse error")
 
     monkeypatch.setattr(ingest_job_main, "build_ingest_deps", lambda settings: object())
-    monkeypatch.setattr(ingest_job_main, "open_rabbitmq_channel", lambda settings: (connection, channel))
+    monkeypatch.setattr(
+        ingest_job_main, "open_rabbitmq_channel", lambda settings: (connection, channel)
+    )
     monkeypatch.setattr(ingest_job_main, "run_ingest_job_from_payload", _fake_run)
     monkeypatch.setattr(
         ingest_job_main,
@@ -288,7 +358,7 @@ def test_consume_until_shutdown_calls_failure_handler_on_parse_error(monkeypatch
     ingest_job_main._consume_until_shutdown(Settings(ingest_job_queue="lina.data-ingestion.ingest"))
 
     assert len(handle_calls) == 1
-    assert handle_calls[0]["method"].delivery_tag == 303
+    assert cast(_FakeMethod, handle_calls[0]["method"]).delivery_tag == 303
     assert isinstance(handle_calls[0]["error"], ValueError)
     assert channel.acked == []
     assert connection.closed is True

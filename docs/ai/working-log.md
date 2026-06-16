@@ -5,6 +5,224 @@
 
 ---
 
+## 2026-06-16 — featureI-8 Step 7 진행: siteUrl 기반 Confluence API 경로 정합 통합 검증
+
+**작업**:
+`test_run_ingest_job_resolves_credentials_and_uses_cloud_id_in_confluence_api_url`를 추가해
+`credential_lookup` 정규화 결과의 `cloudId`가 downstream Confluence API 경로(`.../ex/confluence/{cloudId}/...`)
+구성에 일관되게 사용되는지 통합 경로에서 검증했다.
+
+**변경 범위**
+
+- `tests/ingestion/test_ingestion_worker.py`
+  - `test_run_ingest_job_resolves_credentials_and_uses_cloud_id_in_confluence_api_url` 추가.
+  - `resolved-cloud`로 전달된 `cloudId`를 기반으로 `https://api.atlassian.com/ex/confluence/{cloudId}/...`
+    경로가 구성됨을 assertion.
+
+**검증**
+
+- 부분 테스트: `python3.11 -m pytest tests/ingestion/test_ingestion_worker.py -q`
+  - `32 passed`
+- 전체 테스트: `python3.11 -m pytest`
+  - `268 passed, 2 skipped`
+- Linter: `python3.11 -m ruff check app tests`
+  - baseline 오류(`E501`/`I001`/`UP037`)가 `38`건 유지(신규 추가 오류 없음).
+
+## 2026-06-16 — featureI-8 Step 5 보강: 5xx/네트워크 분기 + 운영 점검 runbook 반영
+
+**작업**:
+`app/ingestion/workers/ingestion_worker.py`에서 `credential_lookup` 실패를 5xx/네트워크 예외 경로까지
+운영 판단이 가능한 메시지로 분리하고, 실패 처리 정책의 폴백/Fail-fast 동작을 일관되게 고정했다.
+동시에 featureI-8 운영 점검 runbook를 추가해 staging/production 배포 키 동기화 및 알림 임계치 기준을 정리했다.
+
+**변경 범위**
+
+- `app/ingestion/workers/ingestion_worker.py`
+  - `_resolve_runtime_credentials`의 분기 보강
+    - 5xx: 장애 전파/재시도 정책 고려 로그로 고정.
+    - 비-HTTP 예외(네트워크): 예외 유형 로그 후 legacy 토큰 fallback 또는 fail-fast.
+- `tests/ingestion/test_ingestion_worker.py`
+  - 네트워크 예외 시 legacy fallback 성공 케이스 추가.
+  - 네트워크 예외 시 no-legacy 토큰 fail-fast 케이스 추가.
+- `docs/ai/featureI-8-internal-auth-key-runbook.md`
+  - staging/prod 키 동기화 체크리스트와 401/미스매치 알림 임계치 기준 문서화.
+
+**검증**
+
+- 부분 테스트: `python3.11 -m pytest tests/ingestion/test_ingestion_worker.py -q`
+  - `29 passed`
+- 전체 테스트: `python3.11 -m pytest`
+  - `265 passed, 2 skipped`
+- Linter: `python3.11 -m ruff check app tests`
+  - 기존 베이스라인 이슈(`E501`/`I001`/`UP037`) 유지. 신규 치명 실패 없음.
+
+## 2026-06-16 — featureI-8 Step 2 진행: internal auth-server credential lookup client/팩토리 추가
+
+## 2026-06-16 — featureI-8 Step 4 진행: credential 조회 예외 처리 정합(동작 경계) 보완
+
+**작업**:
+`_resolve_runtime_credentials`의 정상 경로 반환 누락과 `run_ingest_job`/`run_delta_ingest_job`에서
+`credential_lookup` 예외가 바깥으로 탈출하던 구간을 함께 보완해, 실패 전파 경로를 완료 이벤트 보장 경로에
+일관되게 수렴되도록 했다.
+
+**변경 범위**
+
+- `app/ingestion/workers/ingestion_worker.py`
+  - `_resolve_runtime_credentials`에서 조회 성공 시 `return`이 항상 반환되도록 정리.
+  - `run_ingest_job`의 `access_token/cloud_id` 조회/`request` 구성/`run_crawl` 구간을 동일 `try` 블록으로 묶어
+    `lookup` 실패도 `FAILED` completion 경로로 처리.
+  - `run_delta_ingest_job`도 동일하게 `credential_lookup` 실패를 `FAILED` completion 경로로 수렴.
+- `tests/ingestion/test_ingestion_worker.py`
+  - 선행 단계에서 추가한 `401` 메시지 분류/로그 및 상태 분기 테스트가 전체 실행에 통합되어 있는지 재점검.
+
+**검증**
+
+- 부분 테스트: `python3.11 -m pytest tests/ingestion/test_ingestion_worker.py -q`
+  - `21 passed`
+- 전체 테스트: `python3.11 -m pytest`
+  - `255 passed, 2 skipped`
+- Linter: `python3.11 -m ruff check app tests`
+  - 실패: 기존 라인 기준으로 `E501`/`I001`/`UP037` 다수 존재(34 errors, fixable 5)
+  - 신규 수정 건에서 추가된 치명 실패는 보이지 않음(기존 정합성 위반과 구분해 처리 필요)
+
+**비고**
+
+- `run_ingest_job`에서 `lookup` 실패가 잡 단위 실패 이벤트로 정상 수렴되며,
+  legacy 토큰 미전달 모드에서는 401이 발생해도 크롤/처리 단계로 진행되지 않고 완료 이벤트 실패로 종료됨.
+  (기존 테스트 `test_run_ingest_job_fail_fast_when_lookup_missing_internal_key_and_no_legacy_token` 기준 정합)
+
+## 2026-06-16 — featureI-8 Step 6 진행: 내부 credential 조회 정상응답 연동 통합 테스트
+
+**작업**:
+`run_ingest_job`에서 `credential_lookup` 정상 응답이 실제 수집 실행 파라미터에 반영되는지
+검증하는 통합 테스트를 추가했다. legacy 토큰이 이미 존재해도 내부 조회값이 우선 채택되는 경로를
+고정했다.
+
+**변경 범위**
+
+- `tests/ingestion/test_ingestion_worker.py`
+  - `test_run_ingest_job_resolves_credentials_and_passes_to_crawl_request` 추가
+    - 조회 성공 결과(`resolved-token`, `resolved-cloud`)가 `run_crawl` 호출의 요청값으로 전달되는지 확인.
+
+**검증**
+
+- 부분 테스트: `python3.11 -m pytest tests/ingestion/test_ingestion_worker.py -q`
+  - `22 passed`
+- 전체 테스트: `python3.11 -m pytest`
+  - `256 passed, 2 skipped`
+- Linter: `python3.11 -m ruff check app tests`
+  - 기존 프로젝트 기준 `E501`/`I001`/`UP037` 다수(34 errors, fixable 5) 유지
+  - 이번 항목으로 추가된 신규 린터 실패 없음.
+
+**작업**:
+`app/ingestion/bootstrap.py`에 `auth-server` 내부 호출 공용 request seam와
+`adminUserId` 기반 `credential_lookup` 팩토리를 추가했다. `GET /internal/auth/admin-confluence-credential`
+요청 시에는 `X-Internal-Api-Key`를 주입하고, `/internal/...` 이외 경로에는 주입하지 않도록 분기했다.
+
+**변경 범위**
+
+- `app/ingestion/bootstrap.py`
+  - `_normalize_internal_auth_server_path`/`_is_internal_api_path` 추가.
+  - `build_auth_server_requester(settings, *, client=None)` 추가.
+    - `path`가 `/internal/...`면 `X-Internal-Api-Key`를 헤더로 주입.
+    - 외부 API 경로에는 헤더 미주입 보장.
+  - `build_internal_credential_lookup(settings, *, request=None)` 추가.
+    - `adminUserId`로 auth-server 내부 credential API 호출.
+    - 응답에서 `accessToken`/`cloudId`만 꺼내 반환.
+- `tests/ingestion/test_bootstrap.py`
+  - `build_auth_server_requester` 분기 테스트 추가(내부/공개 경로 헤더 포함 여부).
+  - `build_internal_credential_lookup` 경로/파싱 단위 테스트 추가.
+
+**검증**
+
+- `python3.11 -m pytest tests/ingestion/test_bootstrap.py`
+  - `11 passed, 1 skipped`
+- `python3.11 -m pytest`
+  - `241 passed, 2 skipped`
+- `./scripts/test.sh`
+  - 실행 환경의 `pytest` 바이너리 미설치로 실패 (`pytest not found...`)하여 보조 확인만 수행.
+
+## 2026-06-16 — featureI-8 Step 3 진행: credential lookup 예외 분기/로그 정합 강화
+
+**작업**:
+`app/ingestion/workers/ingestion_worker.py`의 `_resolve_runtime_credentials`를 강화해
+auth-server `credential_lookup` 실패 시 상태코드별 로그 및 실패 동작을 분기 처리했다.
+요청 토큰이 이미 존재하는 legacy 경로에서는 조회 실패 시 fallback 하도록 하고,
+토큰 미전달 모드에서는 조회 실패를 즉시 `RuntimeError`로 전파해 잡 실패로 이어지도록 정리했다.
+
+**변경 범위**
+
+- `app/ingestion/workers/ingestion_worker.py`
+  - `_resolve_runtime_credentials` 상태 분기 추가:
+    - 400: adminUserId 누락/오류 경고
+    - 401: `INTERNAL_API_KEY` 누락/미스매치(의심) 경고
+    - 403: ADMIN 권한 없음 경고
+    - 404: 대상 사용자 없음/미로그인 경고
+    - 5xx: auth-server 처리 실패(재시도 고려) 경고
+  - 상태코드별 처리 후 legacy 토큰이 있으면 폴백, 없으면 런타임 실패로 전환.
+- `tests/ingestion/test_ingestion_worker.py`
+  - `_resolve_runtime_credentials` 상태 분기/폴백 동작 단위 테스트 추가
+    - 400/401/403/404 경로 로그/실패 동작
+    - lookup 성공 우선 적용
+    - 조회 실패 시 legacy 토큰 fallback
+
+**검증**
+
+- `python3.11 -m pytest tests/ingestion/test_ingestion_worker.py`
+  - `17 passed`
+- `python3.11 -m pytest`
+  - `251 passed, 2 skipped`
+- `python3.11 -m ruff check app tests`
+  - 실패: 기존 코드 기준 `E501`/`I001` 다수(요약 34 errors, fixable 5), 신규 변경 전용 치명 실패는 확인되지 않음
+
+## 2026-06-16 — featureI-8 Step 1 완료: Internal auth-server 호출 설정 추가
+
+**작업**:
+`app/config.py`에 INGESTION → auth-server 내부 credential 조회 연동을 위한 설정을 추가했다.
+`RAG_INTERNAL_API_KEY`, `RAG_INTERNAL_AUTH_SERVER_BASE_URL`, `RAG_INTERNAL_AUTH_SERVER_ADMIN_CREDENTIAL_PATH`로
+주입 가능한 항목을 `Settings`에 반영했다.
+
+**변경 범위**
+
+- `app/config.py`
+  - `internal_api_key: SecretStr = SecretStr("")` 추가
+  - `internal_auth_server_base_url: str = ""` 추가
+  - `internal_auth_server_admin_credential_path: str = "/internal/auth/admin-confluence-credential"` 추가
+  - 변경 이력(`변경사항 내역`)에 항목 추가
+
+**검증**
+
+- `./scripts/test.sh`
+  - `pytest not found. Install pytest or adjust scripts/test.sh.`로 실행 실패
+- `python3 -m pytest --version`
+  - `No module named pytest`
+
+**비고**
+
+- 실행 환경에 테스트 런타임이 없어 실제 테스트 pass/fail 판단은 보류. pytest 설치 후 재실행 필요.
+
+## 2026-06-16 — featureI-8 Step 1: 테스트 환경 구성 후 전체 테스트 재실행
+
+**작업**:
+Python 3.11 가상환경을 생성해 `.[ingestion,dev]` 의존성을 설치한 뒤 `./scripts/test.sh`로 전체 테스트를 재실행했다.
+
+**검증**
+
+- `python3.11 -m venv .venv` 후 `pip install -e ".[ingestion,dev]"`
+- `./scripts/test.sh`
+  - `240`개 수집
+  - `219` passed, `2` skipped, `19` failed
+- 실패 위치:
+  - `tests/api/test_ingest_route.py` (12개 실패)
+  - `tests/api/test_webhook_route.py` (7개 실패)
+- 공통 원인:
+  - `prometheus_fastapi_instrumentator` + 현재 라우팅 객체 호환성(`AttributeError: '_IncludedRouter' object has no attribute 'path'`)
+
+**비고**
+
+- 실패는 이번 변경 건(FeatureI-8 Step 1)과 무관한 의존성 호환성/미들웨어 실패로 보임.
+- 실패 해결 시 `featureI-8` 변경 반영 이후의 API 테스트 재검증 필요.
+
 ## 2026-06-11 — featureI-7c Step 1 완료: completion 이벤트 DTO/스키마 정합
 
 ## 2026-06-12 — featureI-7c Step 10 완료: ingest job DLQ 정책 반영 + 전체 테스트 검증

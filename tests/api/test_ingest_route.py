@@ -22,7 +22,7 @@ import httpx
 import pytest
 from httpx import ASGITransport
 
-from app.api.deps import DeltaRunner, IngestDeps
+from app.api.deps import DeltaRunner, IngestDeps, _poc_empty_delta
 from app.api.ingest_completion import IngestCompletionPublisher, QueueIngestCompletionPublisher
 from app.api.main import create_app
 from app.api.routes import get_deps
@@ -74,16 +74,13 @@ def _stub_deps(
             failed_page_ids=["p-bad"],
         )
 
-    delta_kwargs: dict[str, DeltaRunner] = {}
-    if run_delta is not None:
-        delta_kwargs["run_delta"] = run_delta
     return IngestDeps(
         job_store=InMemoryIngestJobStore(),
         run_crawl=_run_crawl,
         sync_worker=sync_worker or SyncWorker(SyncWorkerDeps(store=FakeQdrantPoolStore())),
         completion_publisher=completion_publisher,
         delta_delete_confirm=delta_delete_confirm,
-        **delta_kwargs,
+        run_delta=run_delta if run_delta is not None else _poc_empty_delta,
     )
 
 

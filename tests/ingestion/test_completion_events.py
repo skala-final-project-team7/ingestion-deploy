@@ -21,7 +21,9 @@ class _FakePikaChannel:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    def basic_publish(self, *, exchange: str, routing_key: str, body: bytes, properties: object) -> None:
+    def basic_publish(
+        self, *, exchange: str, routing_key: str, body: bytes, properties: object
+    ) -> None:
         self.calls.append(
             {
                 "exchange": exchange,
