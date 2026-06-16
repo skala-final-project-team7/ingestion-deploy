@@ -5,6 +5,36 @@
 
 ---
 
+## 2026-06-16 — featureI-8 Step 2 진행: internal auth-server credential lookup client/팩토리 추가
+
+**작업**:
+`app/ingestion/bootstrap.py`에 `auth-server` 내부 호출 공용 request seam와
+`adminUserId` 기반 `credential_lookup` 팩토리를 추가했다. `GET /internal/auth/admin-confluence-credential`
+요청 시에는 `X-Internal-Api-Key`를 주입하고, `/internal/...` 이외 경로에는 주입하지 않도록 분기했다.
+
+**변경 범위**
+
+- `app/ingestion/bootstrap.py`
+  - `_normalize_internal_auth_server_path`/`_is_internal_api_path` 추가.
+  - `build_auth_server_requester(settings, *, client=None)` 추가.
+    - `path`가 `/internal/...`면 `X-Internal-Api-Key`를 헤더로 주입.
+    - 외부 API 경로에는 헤더 미주입 보장.
+  - `build_internal_credential_lookup(settings, *, request=None)` 추가.
+    - `adminUserId`로 auth-server 내부 credential API 호출.
+    - 응답에서 `accessToken`/`cloudId`만 꺼내 반환.
+- `tests/ingestion/test_bootstrap.py`
+  - `build_auth_server_requester` 분기 테스트 추가(내부/공개 경로 헤더 포함 여부).
+  - `build_internal_credential_lookup` 경로/파싱 단위 테스트 추가.
+
+**검증**
+
+- `python3.11 -m pytest tests/ingestion/test_bootstrap.py`
+  - `11 passed, 1 skipped`
+- `python3.11 -m pytest`
+  - `241 passed, 2 skipped`
+- `./scripts/test.sh`
+  - 실행 환경의 `pytest` 바이너리 미설치로 실패 (`pytest not found...`)하여 보조 확인만 수행.
+
 ## 2026-06-16 — featureI-8 Step 1 완료: Internal auth-server 호출 설정 추가
 
 **작업**:
