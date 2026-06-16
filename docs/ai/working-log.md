@@ -5,6 +5,57 @@
 
 ---
 
+## 2026-06-16 — featureI-8 Step 7 진행: siteUrl 기반 Confluence API 경로 정합 통합 검증
+
+**작업**:
+`test_run_ingest_job_resolves_credentials_and_uses_cloud_id_in_confluence_api_url`를 추가해
+`credential_lookup` 정규화 결과의 `cloudId`가 downstream Confluence API 경로(`.../ex/confluence/{cloudId}/...`)
+구성에 일관되게 사용되는지 통합 경로에서 검증했다.
+
+**변경 범위**
+
+- `tests/ingestion/test_ingestion_worker.py`
+  - `test_run_ingest_job_resolves_credentials_and_uses_cloud_id_in_confluence_api_url` 추가.
+  - `resolved-cloud`로 전달된 `cloudId`를 기반으로 `https://api.atlassian.com/ex/confluence/{cloudId}/...`
+    경로가 구성됨을 assertion.
+
+**검증**
+
+- 부분 테스트: `python3.11 -m pytest tests/ingestion/test_ingestion_worker.py -q`
+  - `32 passed`
+- 전체 테스트: `python3.11 -m pytest`
+  - `268 passed, 2 skipped`
+- Linter: `python3.11 -m ruff check app tests`
+  - baseline 오류(`E501`/`I001`/`UP037`)가 `38`건 유지(신규 추가 오류 없음).
+
+## 2026-06-16 — featureI-8 Step 5 보강: 5xx/네트워크 분기 + 운영 점검 runbook 반영
+
+**작업**:
+`app/ingestion/workers/ingestion_worker.py`에서 `credential_lookup` 실패를 5xx/네트워크 예외 경로까지
+운영 판단이 가능한 메시지로 분리하고, 실패 처리 정책의 폴백/Fail-fast 동작을 일관되게 고정했다.
+동시에 featureI-8 운영 점검 runbook를 추가해 staging/production 배포 키 동기화 및 알림 임계치 기준을 정리했다.
+
+**변경 범위**
+
+- `app/ingestion/workers/ingestion_worker.py`
+  - `_resolve_runtime_credentials`의 분기 보강
+    - 5xx: 장애 전파/재시도 정책 고려 로그로 고정.
+    - 비-HTTP 예외(네트워크): 예외 유형 로그 후 legacy 토큰 fallback 또는 fail-fast.
+- `tests/ingestion/test_ingestion_worker.py`
+  - 네트워크 예외 시 legacy fallback 성공 케이스 추가.
+  - 네트워크 예외 시 no-legacy 토큰 fail-fast 케이스 추가.
+- `docs/ai/featureI-8-internal-auth-key-runbook.md`
+  - staging/prod 키 동기화 체크리스트와 401/미스매치 알림 임계치 기준 문서화.
+
+**검증**
+
+- 부분 테스트: `python3.11 -m pytest tests/ingestion/test_ingestion_worker.py -q`
+  - `29 passed`
+- 전체 테스트: `python3.11 -m pytest`
+  - `265 passed, 2 skipped`
+- Linter: `python3.11 -m ruff check app tests`
+  - 기존 베이스라인 이슈(`E501`/`I001`/`UP037`) 유지. 신규 치명 실패 없음.
+
 ## 2026-06-16 — featureI-8 Step 2 진행: internal auth-server credential lookup client/팩토리 추가
 
 ## 2026-06-16 — featureI-8 Step 4 진행: credential 조회 예외 처리 정합(동작 경계) 보완

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import UTC, datetime
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -22,15 +24,43 @@ from app.ingestion.workers.ingestion_worker import (
     run_delta_ingest_job,
     run_ingest_job,
 )
+from app.ingestion.workers.sync_worker import WebhookDeleteEvent
 from app.schemas.enums import IngestJobStatus
+from app.storage.ingest_jobs import IngestJobRecord
 
 
 class _FakeJobStore:
     def __init__(self) -> None:
         self.updates: list[tuple[str, dict[str, object]]] = []
+        self._records: dict[str, IngestJobRecord] = {}
 
-    def update(self, job_id: str, **changes: object) -> None:
-        self.updates.append((job_id, dict(changes)))
+    def create(self, job_id: str | None = None) -> IngestJobRecord:
+        created_id = job_id or "job-fake"
+        record = IngestJobRecord(
+            job_id=created_id,
+            status=IngestJobStatus.STARTED,
+            started_at=datetime.now(UTC),
+        )
+        self._records[created_id] = record
+        return record
+
+    def get(self, job_id: str) -> IngestJobRecord | None:
+        return self._records.get(job_id)
+
+    def update(self, job_id: str, **changes: object) -> IngestJobRecord | None:
+        record = self._records.get(job_id)
+        if record is None:
+            record = IngestJobRecord(
+                job_id=job_id,
+                status=IngestJobStatus.STARTED,
+                started_at=datetime.now(UTC),
+            )
+        for key, value in changes.items():
+            setattr(record, key, value)
+
+        self._records[job_id] = record
+        self.updates.append((job_id, {k: cast(Any, v) for k, v in changes.items()}))
+        return record
 
 
 class _FakeSyncWorker:
@@ -40,6 +70,9 @@ class _FakeSyncWorker:
 
     def apply_delta_deletions(self, result: DeltaSyncResult, *, confirm: bool) -> SoftDeleteResult:
         self.calls.append((result, confirm))
+        return self.delete_result
+
+    def handle_webhook_event(self, event: WebhookDeleteEvent) -> SoftDeleteResult:
         return self.delete_result
 
 
@@ -59,11 +92,11 @@ class _FlakyJobStore(_FakeJobStore):
         self.fail_on_update_calls = fail_on_update_calls
         self.update_calls = 0
 
-    def update(self, job_id: str, **changes: object) -> None:
+    def update(self, job_id: str, **changes: object) -> IngestJobRecord | None:
         self.update_calls += 1
         if self.update_calls in self.fail_on_update_calls:
             raise RuntimeError("job store update failed intentionally")
-        super().update(job_id, **changes)
+        return super().update(job_id, **changes)
 
 
 class _FailingDeltaSyncWorker(_FakeSyncWorker):
@@ -83,6 +116,7 @@ def _http_status_error(status_code: int) -> Exception:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         return exc
+    raise RuntimeError("expected http status error")
 
 
 def _http_status_error_with_message(status_code: int, message: str) -> Exception:
@@ -114,7 +148,9 @@ def test_resolve_runtime_credentials_uses_lookup_result_first() -> None:
     assert cloud_id == "resolved-cloud"
 
 
-def test_resolve_runtime_credentials_uses_payload_credentials_on_internal_lookup_legacy_path() -> None:
+def test_resolve_runtime_credentials_uses_payload_credentials_on_internal_lookup_legacy_path() -> (
+    None
+):
     access_token, cloud_id = _resolve_runtime_credentials(
         "admin-1",
         access_token="legacy-token",
@@ -127,7 +163,9 @@ def test_resolve_runtime_credentials_uses_payload_credentials_on_internal_lookup
 
 
 def test_ingest_completion_event_payload_has_required_fields_and_no_credentials() -> None:
-    event = IngestCompletionEvent(job_id="job-1", mode="full", status=IngestJobStatus.COMPLETED, admin_user_id="admin-42")
+    event = IngestCompletionEvent(
+        job_id="job-1", mode="full", status=IngestJobStatus.COMPLETED, admin_user_id="admin-42"
+    )
     payload = event.to_payload()
 
     assert set(payload.keys()) >= {"jobId", "adminUserId", "mode", "status", "completedAt"}
@@ -150,12 +188,15 @@ def test_ingest_completion_event_rejects_invalid_status() -> None:
             status=IngestJobStatus.STARTED,  # type: ignore[arg-type]
         )
 
+
 def test_run_ingest_job_success_publishes_completed_event() -> None:
     store = _FakeJobStore()
     completion_publisher = _FakeCompletionPublisher()
     deps = IngestDeps(
         job_store=store,
-        run_crawl=lambda _req: CrawlResult(space_key="CLOUD", pages_collected=3, failed_page_ids=["failed-1"]),
+        run_crawl=lambda _req: CrawlResult(
+            space_key="CLOUD", pages_collected=3, failed_page_ids=["failed-1"]
+        ),
         sync_worker=_FakeSyncWorker(),
         completion_publisher=completion_publisher,
     )
@@ -217,6 +258,70 @@ def test_run_ingest_job_resolves_credentials_and_passes_to_crawl_request() -> No
     assert run_requests[0].access_token == "resolved-token"
     assert run_requests[0].cloud_id == "resolved-cloud"
     assert completion_publisher.events[0].to_payload()["status"] == "COMPLETED"
+
+
+def test_run_ingest_job_resolves_credentials_and_uses_cloud_id_in_confluence_api_url() -> None:
+    store = _FakeJobStore()
+    completion_publisher = _FakeCompletionPublisher()
+    confluence_api_urls: list[str] = []
+
+    def _run_crawl(request: CrawlRequest) -> CrawlResult:
+        confluence_api_urls.append(
+            f"https://api.atlassian.com/ex/confluence/{request.cloud_id}/wiki/rest/api/content"
+        )
+        return CrawlResult(space_key="CLOUD", pages_collected=1, failed_page_ids=[])
+
+    deps = IngestDeps(
+        job_store=store,
+        run_crawl=_run_crawl,
+        sync_worker=_FakeSyncWorker(),
+        completion_publisher=completion_publisher,
+    )
+
+    run_ingest_job(
+        deps,
+        job_id="job-lookup-success-api-url",
+        mode="full",
+        crawl_request=CrawlRequest(admin_user_id="admin-1"),
+        credential_lookup=lambda _: ("resolved-token", "resolved-cloud"),
+    )
+
+    assert confluence_api_urls == [
+        "https://api.atlassian.com/ex/confluence/resolved-cloud/wiki/rest/api/content"
+    ]
+    assert completion_publisher.events[0].to_payload()["status"] == "COMPLETED"
+
+
+def test_run_ingest_job_without_credential_lookup_keeps_request_tokens() -> None:
+    store = _FakeJobStore()
+    completion_publisher = _FakeCompletionPublisher()
+    run_requests: list[CrawlRequest] = []
+
+    def _run_crawl(request: CrawlRequest) -> CrawlResult:
+        run_requests.append(request)
+        return CrawlResult(space_key="CLOUD", pages_collected=1, failed_page_ids=[])
+
+    deps = IngestDeps(
+        job_store=store,
+        run_crawl=_run_crawl,
+        sync_worker=_FakeSyncWorker(),
+        completion_publisher=completion_publisher,
+    )
+
+    run_ingest_job(
+        deps,
+        job_id="job-without-lookup",
+        mode="full",
+        crawl_request=CrawlRequest(
+            admin_user_id="admin-1",
+            access_token="legacy-token",
+            cloud_id="legacy-cloud",
+        ),
+    )
+
+    assert run_requests[0].access_token == "legacy-token"
+    assert run_requests[0].cloud_id == "legacy-cloud"
+    assert run_requests[0].admin_user_id == "admin-1"
 
 
 @pytest.mark.parametrize(
@@ -315,6 +420,53 @@ def test_run_ingest_job_fail_fast_when_lookup_missing_internal_key_and_no_legacy
     assert "admin credential lookup failed" in str(payload["message"])
 
 
+@pytest.mark.parametrize(
+    ("status_code",),
+    [
+        (400,),
+        (403,),
+        (404,),
+    ],
+)
+def test_run_ingest_job_fail_fast_for_lookup_client_errors_without_legacy_credentials(
+    status_code: int,
+) -> None:
+    store = _FakeJobStore()
+    completion_publisher = _FakeCompletionPublisher()
+    run_crawl_calls: list[CrawlRequest] = []
+
+    def _run_crawl(request: CrawlRequest) -> CrawlResult:
+        run_crawl_calls.append(request)
+        return CrawlResult(space_key="CLOUD", pages_collected=1, failed_page_ids=[])
+
+    deps = IngestDeps(
+        job_store=store,
+        run_crawl=_run_crawl,
+        sync_worker=_FakeSyncWorker(),
+        completion_publisher=completion_publisher,
+    )
+
+    run_ingest_job(
+        deps,
+        job_id=f"job-failfast-status-{status_code}",
+        mode="full",
+        crawl_request=CrawlRequest(admin_user_id="admin-1"),
+        credential_lookup=lambda _admin_user_id: (_ for _ in ()).throw(
+            _http_status_error(status_code)
+        ),
+    )
+
+    assert not run_crawl_calls
+    assert store.updates[0][0] == f"job-failfast-status-{status_code}"
+    assert store.updates[0][1]["status"] == IngestJobStatus.IN_PROGRESS
+    assert store.updates[-1][1]["status"] == IngestJobStatus.FAILED
+    [published] = completion_publisher.events
+    payload = published.to_payload()
+    assert payload["status"] == "FAILED"
+    assert payload["errorCode"] == "INGEST_FAILED"
+    assert "admin credential lookup failed" in str(payload["message"])
+
+
 def test_run_ingest_job_falls_back_to_legacy_tokens_when_lookup_fails() -> None:
     store = _FakeJobStore()
     completion_publisher = _FakeCompletionPublisher()
@@ -363,12 +515,77 @@ def test_resolve_runtime_credentials_500_status_logs_and_falls_back_to_payload()
     assert cloud_id == "legacy-cloud"
 
 
+def test_resolve_runtime_credentials_network_error_falls_back_to_payload() -> None:
+    class _NetworkError(Exception):
+        pass
+
+    def _lookup(_admin_user_id: str) -> tuple[str, str]:
+        raise _NetworkError("connection reset")
+
+    access_token, cloud_id = _resolve_runtime_credentials(
+        "admin-1",
+        access_token="legacy-token",
+        cloud_id="legacy-cloud",
+        credential_lookup=_lookup,
+    )
+
+    assert access_token == "legacy-token"
+    assert cloud_id == "legacy-cloud"
+
+
+def test_resolve_runtime_credentials_network_error_with_no_legacy_tokens_fails_fast() -> None:
+    class _NetworkError(Exception):
+        pass
+
+    def _lookup(_admin_user_id: str) -> tuple[str, str]:
+        raise _NetworkError("connection reset")
+
+    with pytest.raises(RuntimeError, match="admin credential lookup failed with non-http error"):
+        _resolve_runtime_credentials(
+            "admin-1",
+            access_token=None,
+            cloud_id=None,
+            credential_lookup=_lookup,
+        )
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [
+        (400, "admin credential lookup 400: adminUserId 누락/형식 오류"),
+        (403, "admin credential lookup 403"),
+        (404, "admin credential lookup 404"),
+    ],
+)
+def test_resolve_runtime_credentials_status_fallback_to_legacy(
+    status_code: int,
+    expected: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def _lookup(_admin_user_id: str) -> tuple[str, str]:
+        raise _http_status_error(status_code)
+
+    with caplog.at_level(logging.WARNING):
+        access_token, cloud_id = _resolve_runtime_credentials(
+            "admin-1",
+            access_token="legacy-token",
+            cloud_id="legacy-cloud",
+            credential_lookup=_lookup,
+        )
+
+    assert access_token == "legacy-token"
+    assert cloud_id == "legacy-cloud"
+    assert any(expected in rec.message for rec in caplog.records)
+
+
 def test_run_ingest_job_success_publishes_completed_event_without_sensitive_fields() -> None:
     store = _FakeJobStore()
     completion_publisher = _FakeCompletionPublisher()
     deps = IngestDeps(
         job_store=store,
-        run_crawl=lambda _req: CrawlResult(space_key="CLOUD", pages_collected=2, failed_page_ids=[]),
+        run_crawl=lambda _req: CrawlResult(
+            space_key="CLOUD", pages_collected=2, failed_page_ids=[]
+        ),
         sync_worker=_FakeSyncWorker(),
         completion_publisher=completion_publisher,
     )

@@ -32,8 +32,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import cast
-from typing import Any
+from typing import Any, cast
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -165,7 +164,8 @@ class PikaQueuePublisher(QueuePublisher):
                 if attempt >= attempts:
                     sanitized_message = _sanitize_for_log(message)
                     _LOGGER.exception(
-                        "Failed to publish message to exchange=%r routing_key=%r after %d attempts. "
+                        "Failed to publish message to exchange=%r routing_key=%r "
+                        "after %d attempts. "
                         "message_keys=%r payload_excerpt=%r",
                         self._exchange,
                         routing_key,

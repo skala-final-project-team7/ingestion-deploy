@@ -3,15 +3,15 @@
 --------------------------------------------------
 작성자 : 이다연
 작성목적 : ``/ml/ingest`` API 또는 향후 RabbitMQ ingest 큐 consumer 가 공통적으로 재사용할
-          수집 종료(COMPLETED/FAILED) 처리 경로를 한 곳에 정리한다. 수집 수명주기를
-          terminal 상태로 마감하고, 완료 이벤트를 안전하게 발행해 BFF Admin Key deactivate
-          트리거를 보장한다.
+          수집 종료(COMPLETED/FAILED) 처리 경로를 한 곳에 정리한다. 수집 수명주기를 terminal
+          상태로 마감하고, 완료 이벤트를 안전하게 발행해 BFF Admin Key deactivate 트리거를
+          보장한다.
 변경사항 내역 (날짜, 변경목적, 변경내용 순)
   - 2026-06-11, featureI-7c — success/failed publish 분기를 이 파일에 정규화.
   - 2026-06-11, featureI-7c Step 4 — 실패 경로에서 completion 이벤트 강제 보장.
-    수집/Delta 실패 시 `FAILED` 발행을 상태 저장 실패와 분리해 `publish 실패`만 제외하고 보장하도록
-    `_publish_failed_completion` 경로를 추가. `run_delta_ingest_job`는 삭제 반영 예외도 이 경로로 수렴해
-    BFF deactivate 트리거가 중단되지 않도록 정합화.
+    수집/Delta 실패 시 `FAILED` 발행을 상태 저장 실패와 분리해 `publish 실패`만 제외하고
+    보장하도록 `_publish_failed_completion` 경로를 추가한다. `run_delta_ingest_job`는 삭제 반영
+    예외도 이 경로로 수렴해 BFF deactivate 트리거가 중단되지 않도록 정합화한다.
 --------------------------------------------------
 """
 
@@ -44,7 +44,7 @@ class IngestJobCommand:
     requested_at: datetime
 
     @classmethod
-    def from_payload(cls, payload: Mapping[str, object]) -> "IngestJobCommand":
+    def from_payload(cls, payload: Mapping[str, object]) -> IngestJobCommand:
         """필수 필드(``jobId, adminUserId, mode, requestedAt``)를 검증해 파싱한다."""
         missing = {"jobId", "adminUserId", "mode", "requestedAt"} - set(payload.keys())
         if missing:
@@ -52,9 +52,7 @@ class IngestJobCommand:
 
         job_id = str(payload["jobId"]).strip() if isinstance(payload["jobId"], str) else ""
         admin_user_id = (
-            str(payload["adminUserId"]).strip()
-            if isinstance(payload["adminUserId"], str)
-            else ""
+            str(payload["adminUserId"]).strip() if isinstance(payload["adminUserId"], str) else ""
         )
         mode = str(payload["mode"]).strip()
         if not job_id:
@@ -122,6 +120,12 @@ def _resolve_runtime_credentials(
         response = getattr(exc, "response", None)
         status_code = getattr(response, "status_code", None)
         detail_message = _extract_response_error_message(response)
+        has_legacy_tokens = access_token is not None or cloud_id is not None
+        should_fallback = has_legacy_tokens and (
+            status_code is None
+            or status_code in {400, 401, 403, 404}
+            or (isinstance(status_code, int) and status_code >= 500)
+        )
 
         if status_code == 400:
             _LOGGER.warning(
@@ -158,8 +162,15 @@ def _resolve_runtime_credentials(
             )
         elif status_code is not None and status_code >= 500:
             _LOGGER.warning(
-                "admin credential lookup %s: auth-server 처리 실패(재시도 고려). adminUserId=%s",
+                "admin credential lookup %s: auth-server 처리 실패. "
+                "재시도 또는 장애 전파 정책으로 처리. adminUserId=%s",
                 status_code,
+                admin_user_id,
+            )
+        elif status_code is None:
+            _LOGGER.warning(
+                "admin credential lookup network/예외 오류. 예외=%s. adminUserId=%s",
+                type(exc).__name__,
                 admin_user_id,
             )
         else:
@@ -169,19 +180,19 @@ def _resolve_runtime_credentials(
                 status_code,
             )
 
-        if (access_token is not None or cloud_id is not None) and (
-            status_code is None
-            or status_code in {400, 401, 403, 404}
-            or status_code >= 500
-        ):
+        if should_fallback:
+            _LOGGER.info(
+                "admin credential lookup 실패로 legacy credential fallback 수행."
+                " adminUserId=%s status=%s",
+                admin_user_id,
+                status_code,
+            )
             return access_token, cloud_id
 
         if status_code is None:
             raise RuntimeError("admin credential lookup failed with non-http error") from exc
 
-        raise RuntimeError(
-            f"admin credential lookup failed: status_code={status_code}"
-        ) from exc
+        raise RuntimeError(f"admin credential lookup failed: status_code={status_code}") from exc
 
     return resolved_access_token or access_token, resolved_cloud_id or cloud_id
 
@@ -237,7 +248,7 @@ def publish_ingest_completion(
             job_id=job_id,
             mode=mode,
             status=status,
-            admin_user_id=admin_user_id,
+            admin_user_id=admin_user_id or "",
             error_code=error_code,
             message=error,
             completed_at=finished_at,
@@ -292,11 +303,11 @@ def run_ingest_job_from_payload(
     """RabbitMQ ``admin.ingest.requested`` 메시지를 파싱해 full/delta ingest 를 실행한다."""
     command = IngestJobCommand.from_payload(payload)
     existing = deps.job_store.get(command.job_id)
-    if (
-        existing is not None
-        and existing.status
-        in {IngestJobStatus.IN_PROGRESS, IngestJobStatus.COMPLETED, IngestJobStatus.FAILED}
-    ):
+    if existing is not None and existing.status in {
+        IngestJobStatus.IN_PROGRESS,
+        IngestJobStatus.COMPLETED,
+        IngestJobStatus.FAILED,
+    }:
         _LOGGER.info(
             "ingest job 중복 수신 skip (idempotent): job_id=%s status=%s",
             command.job_id,
@@ -313,7 +324,9 @@ def run_ingest_job_from_payload(
                 previous_snapshot_path=deps.previous_snapshot_path,
                 admin_user_id=command.admin_user_id,
             ),
-            credential_lookup=credential_lookup_callable if callable(credential_lookup_callable) else None,
+            credential_lookup=credential_lookup_callable
+            if callable(credential_lookup_callable)
+            else None,
         )
         return
 
@@ -322,7 +335,9 @@ def run_ingest_job_from_payload(
         job_id=command.job_id,
         mode=command.mode,
         crawl_request=CrawlRequest(admin_user_id=command.admin_user_id),
-        credential_lookup=credential_lookup_callable if callable(credential_lookup_callable) else None,
+        credential_lookup=credential_lookup_callable
+        if callable(credential_lookup_callable)
+        else None,
     )
 
 

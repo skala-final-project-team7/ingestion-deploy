@@ -10,13 +10,14 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import SecretStr
 
 from app.config import Settings
 from app.ingestion.bootstrap import (
     build_auth_server_requester,
-    build_internal_credential_lookup,
     build_chunking_worker_deps,
     build_document_analyzer,
+    build_internal_credential_lookup,
     build_raw_page_store,
 )
 from app.storage.jobs import FakeIngestionJobsRepository
@@ -58,11 +59,13 @@ class _FakeAuthServerClient:
 
 def test_build_auth_server_requester_includes_internal_key_for_internal_path() -> None:
     settings = Settings(
-        internal_api_key="super-secret",
+        internal_api_key=SecretStr("super-secret"),
         internal_auth_server_base_url="http://auth-server",
         internal_auth_server_admin_credential_path="/internal/auth/admin-confluence-credential",
     )
-    fake_response = _FakeResponse({"accessToken": "at", "cloudId": "cid", "siteUrl": "https://x.atlassian.net"})
+    fake_response = _FakeResponse(
+        {"accessToken": "at", "cloudId": "cid", "siteUrl": "https://x.atlassian.net"}
+    )
     client = _FakeAuthServerClient(fake_response)
     request = build_auth_server_requester(settings, client=client)
 
@@ -78,7 +81,7 @@ def test_build_auth_server_requester_includes_internal_key_for_internal_path() -
 
 def test_build_auth_server_requester_skips_internal_key_for_public_path() -> None:
     settings = Settings(
-        internal_api_key="super-secret",
+        internal_api_key=SecretStr("super-secret"),
         internal_auth_server_base_url="http://auth-server",
     )
     fake_response = _FakeResponse({"ok": True})
@@ -118,7 +121,68 @@ def test_build_internal_credential_lookup_returns_access_token_and_cloud_id() ->
 
     assert access_token == "resolved-token"
     assert cloud_id == "resolved-cloud"
-    assert requests == [("/internal/auth/admin-confluence-credential", {"adminUserId": "712020:91b5"})]
+    assert requests == [
+        ("/internal/auth/admin-confluence-credential", {"adminUserId": "712020:91b5"})
+    ]
+
+
+def test_build_internal_credential_lookup_ignores_refresh_token() -> None:
+    settings = Settings(internal_auth_server_base_url="http://auth-server")
+    requests: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_request(
+        path: str,
+        params: dict[str, object] | None,
+    ) -> _FakeResponse:
+        requests.append((path, params))
+        return _FakeResponse(
+            {
+                "accessToken": "resolved-token",
+                "cloudId": "resolved-cloud",
+                "siteUrl": "https://x.atlassian.net",
+                "refreshToken": "should-not-be-used",
+                "expiresAt": "2026-06-16T00:00:00+09:00",
+            }
+        )
+
+    lookup = build_internal_credential_lookup(settings, request=_fake_request)
+    access_token, cloud_id = lookup("712020:91b5")
+
+    assert access_token == "resolved-token"
+    assert cloud_id == "resolved-cloud"
+    assert requests == [
+        ("/internal/auth/admin-confluence-credential", {"adminUserId": "712020:91b5"})
+    ]
+
+
+def test_build_internal_credential_lookup_normalizes_custom_internal_path() -> None:
+    settings = Settings(
+        internal_api_key=SecretStr("super-secret"),
+        internal_auth_server_base_url="http://auth-server",
+        internal_auth_server_admin_credential_path="internal/auth/admin-confluence-credential",
+    )
+    calls: list[tuple[str, dict[str, object] | None]] = []
+
+    def _fake_request(
+        path: str,
+        params: dict[str, object] | None,
+    ) -> _FakeResponse:
+        calls.append((path, params))
+        return _FakeResponse(
+            {
+                "accessToken": "resolved-token",
+                "cloudId": "resolved-cloud",
+                "siteUrl": "https://x.atlassian.net",
+                "expiresAt": "2026-06-16T00:00:00+09:00",
+            }
+        )
+
+    lookup = build_internal_credential_lookup(settings, request=_fake_request)
+    access_token, cloud_id = lookup("712020:91b5")
+
+    assert access_token == "resolved-token"
+    assert cloud_id == "resolved-cloud"
+    assert calls == [("/internal/auth/admin-confluence-credential", {"adminUserId": "712020:91b5"})]
 
 
 def test_build_raw_page_store_poc_returns_fake() -> None:
@@ -150,7 +214,9 @@ def test_build_chunking_worker_deps_shares_provided_raw_store() -> None:
 
 
 def test_build_chunking_worker_deps_real_threads_embedder_dimension(monkeypatch) -> None:
-    pytest.importorskip("sentence_transformers", reason="embedding optional dependency is not installed")
+    pytest.importorskip(
+        "sentence_transformers", reason="embedding optional dependency is not installed"
+    )
     pytest.importorskip("torch", reason="sentence-transformers runtime dependency missing")
 
     # 회귀(B): 실 어댑터 모드에서 QdrantPoolStore.from_settings 가 임베더의 '실제' 차원을

@@ -35,7 +35,8 @@
     admin_atlassian_credential.site_url 한 곳에만 저장하고(§2-5 JSON `siteUrl` 로 전달,
     public_site_url 별도 명칭 없음), 본 설정은 그 값의 env 주입 지점이다. 용도 ①
     admin-key 호출 대상 site ② webui_link absolute 정규화 base(출처 링크).
-  - 2026-06-16, featureI-8 1차 — INGESTION → auth-server 내부 호출용 INTERNAL API KEY 및 base/path 설정 추가.
+  - 2026-06-16, featureI-8 1차 — INGESTION → auth-server 내부 호출용
+    INTERNAL API KEY 및 base/path 설정 추가.
 --------------------------------------------------
 [호환성]
   - Python 3.11.x, Pydantic 2.7+, pydantic-settings 2.3+
@@ -160,9 +161,11 @@ class Settings(BaseSettings):
     # completion event 를 발행한다. BFF consumer 가 이를 consume 해 auth-server 의 Admin Key
     # deactivate 내부 API 를 호출한다(ML 은 Admin Key 를 직접 말소하지 않음 — 책임 분리).
     # payload 에는 jobId/adminUserId/mode/status 등 계약 필드만 담고
-    # accessToken/refreshToken/cloudId 같은 credential set 은 절대 포함하지 않는다(루트 CLAUDE.md 보안 규칙).
+    # accessToken/refreshToken/cloudId 같은 credential set 은 절대 포함하지 않는다
+    # (루트 CLAUDE.md 보안 규칙).
     ingest_completion_routing_key: str = "lina.admin.ingest.completion"
-    # BFF 기준 completion queue 및 DLQ. default 는 기존 운영 기준명(`lina.admin.ingest.completion*`)으로
+    # BFF 기준 completion queue 및 DLQ. default 는 기존 운영 기준명
+    # (`lina.admin.ingest.completion*`)으로
     # 정합한다.
     ingest_completion_queue: str = "lina.admin.ingest.completion"
     ingest_completion_dlq: str = "lina.admin.ingest.completion.dlq"

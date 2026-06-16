@@ -48,13 +48,16 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from app.config import Settings, get_settings
 from app.ingestion.embedder.base import FakeDenseEmbedder, FakeSparseEmbedder
 from app.ingestion.sync import DeltaSyncRequest, DeltaSyncResult
 from app.ingestion.workers.chunking_worker import ChunkingWorkerDeps
-from app.ingestion.workers.publisher import QueuePublisher
+from app.ingestion.workers.publisher import (
+    _DEFAULT_ROUTING_KEY,
+    QueuePublisher,
+)
 from app.storage.jobs import FakeIngestionJobsRepository
 from app.storage.mongo_cache import FakeEmbeddingCache
 from app.storage.qdrant_fake import FakeQdrantPoolStore
@@ -112,7 +115,11 @@ def build_auth_server_requester(
         request_headers: dict[str, str] = {}
         if _is_internal_api_path(path) and auth_key:
             request_headers["X-Internal-Api-Key"] = auth_key
-        response = request_client.get(path, params=params, headers=request_headers or None)
+        response = request_client.get(
+            path,
+            params=cast(Any, params),
+            headers=request_headers or None,
+        )
         return response
 
     return _request
@@ -125,9 +132,9 @@ def build_internal_credential_lookup(
 ) -> Callable[[str], tuple[str | None, str | None]]:
     """`adminUserId` 기반 `/internal/auth/admin-confluence-credential` 조회 callable 을 만든다.
 
-    반환 callable 시그니처는 기존 `credential_lookup` seam(`Callable[[str], tuple[str|None, str|None]]`)
-    와 동일하며, auth-server 계약 응답의 `accessToken/cloudId/siteUrl/expiresAt` 중
-    credential 값만 전달한다.
+    반환 callable 시그니처는 기존 `credential_lookup` seam(`Callable[[str],
+    tuple[str|None, str|None]]`) 와 동일하며, auth-server 계약 응답의
+    `accessToken/cloudId/siteUrl/expiresAt` 중 credential 값만 전달한다.
     """
     resolved = settings or get_settings()
     requester = request or build_auth_server_requester(resolved)
@@ -575,7 +582,12 @@ class _PerPublishPikaPublisher(QueuePublisher):
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 
-    def publish(self, *, routing_key: str, message: dict[str, object]) -> None:
+    def publish(
+        self,
+        *,
+        routing_key: str = _DEFAULT_ROUTING_KEY,
+        message: dict[str, Any],
+    ) -> None:
         from app.ingestion.workers.publisher import PikaQueuePublisher
 
         connection, channel = open_rabbitmq_channel(self._settings)

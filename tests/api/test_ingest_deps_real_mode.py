@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import SecretStr
+
 import app.api.deps as api_deps
 import app.ingestion.bootstrap as bootstrap
 from app.api.deps import _poc_empty_delta, build_ingest_deps
@@ -103,7 +105,7 @@ def test_poc_mode_keeps_credential_lookup_none_when_not_configured(monkeypatch: 
         use_real_adapters=False,
         source_type="json_fixture",
         internal_auth_server_base_url="",
-        internal_api_key="",
+        internal_api_key=SecretStr(""),
     )
 
     deps = build_ingest_deps(settings)
@@ -119,9 +121,11 @@ def test_poc_mode_configures_credential_lookup_when_internal_config_present(
     monkeypatch.setattr(
         api_deps,
         "build_internal_credential_lookup",
-        lambda settings: lambda admin_user_id: (
-            f"resolved-{admin_user_id}",
-            "resolved-cloud",
+        lambda settings: (
+            lambda admin_user_id: (
+                f"resolved-{admin_user_id}",
+                "resolved-cloud",
+            )
         ),
     )
     # build_source_adapter 는 settings bootstrap 시점에서만 사용된다(credential_lookup 구성만 검증).
@@ -131,7 +135,7 @@ def test_poc_mode_configures_credential_lookup_when_internal_config_present(
         use_real_adapters=False,
         source_type="atlassian",
         internal_auth_server_base_url="http://auth-server:8080",
-        internal_api_key="secret",
+        internal_api_key=SecretStr("secret"),
     )
 
     deps = build_ingest_deps(settings)

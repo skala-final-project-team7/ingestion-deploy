@@ -15,10 +15,9 @@ import json
 import logging
 import signal
 import time
-from collections.abc import Mapping
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Mapping
 from types import FrameType
+from typing import Any
 
 from app.api.deps import build_ingest_deps
 from app.config import Settings, get_settings
@@ -125,7 +124,8 @@ def _handle_failure(
             return
         except Exception as publish_error:
             _LOGGER.exception(
-                "ingest job retry publish 실패 — DLQ로 이동: queue=%s retry_count=%d publish_error=%r",
+                "ingest job retry publish 실패 — DLQ로 이동: "
+                "queue=%s retry_count=%d publish_error=%r",
                 queue,
                 retry_count,
                 publish_error,
@@ -159,7 +159,9 @@ def _consume_until_shutdown(settings: Settings) -> None:
     connection, channel = open_rabbitmq_channel(settings)
     try:
         channel.basic_qos(prefetch_count=1)
-        _LOGGER.info("RabbitMQ 연결 완료 — ingest job 소비 시작: queue=%s", settings.ingest_job_queue)
+        _LOGGER.info(
+            "RabbitMQ 연결 완료 — ingest job 소비 시작: queue=%s", settings.ingest_job_queue
+        )
         for method, properties, body in channel.consume(settings.ingest_job_queue, auto_ack=False):
             try:
                 message = _parse_message(body)

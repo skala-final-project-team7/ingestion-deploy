@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import time
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 
@@ -51,11 +52,11 @@ def _resolve_rabbitmq_url(container: object) -> str:
     raise RuntimeError("Testcontainers container 인터페이스에서 RabbitMQ URL 추출 불가")
 
 
-def _consume_with_wait(channel, queue: str) -> tuple[object, object, object]:
+def _consume_with_wait(channel, queue: str) -> tuple[object, object, bytes]:
     for _ in range(40):
         method, properties, body = channel.basic_get(queue=queue, auto_ack=True)
         if method is not None:
-            return method, properties, body
+            return method, properties, body if isinstance(body, bytes) else bytes(body)
         time.sleep(0.1)
     raise AssertionError("completion queue에서 이벤트 수신 실패")
 
@@ -121,8 +122,8 @@ def test_completion_queue_receive_and_consume_with_rabbitmq_container() -> None:
                 assert getattr(props_2, "delivery_mode", None) == 2
                 assert getattr(props_2, "content_type", None) == "application/json"
 
-                payload_1 = json.loads(body_1.decode("utf-8"))
-                payload_2 = json.loads(body_2.decode("utf-8"))
+                payload_1 = json.loads(cast(bytes, body_1).decode("utf-8"))
+                payload_2 = json.loads(cast(bytes, body_2).decode("utf-8"))
 
                 assert payload_1["status"] == "COMPLETED"
                 assert payload_1["jobId"] == "job-complete-1"

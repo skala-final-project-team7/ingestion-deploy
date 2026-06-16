@@ -39,6 +39,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Protocol
 
 from app.adapters.base import DocumentSourceAdapter
 from app.adapters.factory import build_source_adapter
@@ -47,9 +48,10 @@ from app.config import Settings
 from app.ingestion.bootstrap import build_internal_credential_lookup, build_soft_delete_store
 from app.ingestion.crawler import CrawlRequest, CrawlResult
 from app.ingestion.pipeline import run_poc_ingestion
+from app.ingestion.soft_delete import SoftDeleteResult
 from app.ingestion.sync import DeltaSyncRequest, DeltaSyncResult
-from app.ingestion.workers.sync_worker import SyncWorker, SyncWorkerDeps
-from app.storage.ingest_jobs import IngestJobStore, InMemoryIngestJobStore
+from app.ingestion.workers.sync_worker import SyncWorker, SyncWorkerDeps, WebhookDeleteEvent
+from app.storage.ingest_jobs import IngestJobRecord, InMemoryIngestJobStore
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +60,34 @@ CrawlRunner = Callable[[CrawlRequest], CrawlResult]
 # Delta 러너 시그니처 — ``DeltaSyncRequest`` 를 받아 집계 ``DeltaSyncResult`` 를 돌려준다.
 DeltaRunner = Callable[[DeltaSyncRequest], DeltaSyncResult]
 CredentialLookup = Callable[[str], tuple[str | None, str | None]]
+
+
+class _IngestJobStoreLike(Protocol):
+    """IngestDeps.job_store의 structural 타입."""
+
+    def create(self, job_id: str | None = None) -> IngestJobRecord:
+        ...
+
+    def get(self, job_id: str) -> IngestJobRecord | None:
+        ...
+
+    def update(self, job_id: str, **changes: object) -> IngestJobRecord | None:
+        ...
+
+
+class _SyncWorkerLike(Protocol):
+    """IngestDeps.sync_worker의 structural 타입."""
+
+    def apply_delta_deletions(
+        self,
+        result: DeltaSyncResult,
+        *,
+        confirm: bool,
+    ) -> SoftDeleteResult:
+        ...
+
+    def handle_webhook_event(self, event: WebhookDeleteEvent) -> SoftDeleteResult:
+        ...
 
 
 def _build_internal_credential_lookup(settings: Settings) -> CredentialLookup | None:
@@ -74,9 +104,7 @@ def _build_internal_credential_lookup(settings: Settings) -> CredentialLookup | 
         )
         return None
     if not settings.internal_api_key.get_secret_value():
-        _LOGGER.warning(
-            "RAG_INTERNAL_API_KEY 비어 있어 auth-server credential lookup 비활성화"
-        )
+        _LOGGER.warning("RAG_INTERNAL_API_KEY 비어 있어 auth-server credential lookup 비활성화")
         return None
 
     try:
@@ -100,9 +128,9 @@ def _poc_empty_delta(_request: DeltaSyncRequest) -> DeltaSyncResult:
 class IngestDeps:
     """수집 HTTP API 의존성 묶음 — 라우트와 백그라운드 잡 태스크가 공유한다."""
 
-    job_store: IngestJobStore
+    job_store: _IngestJobStoreLike
     run_crawl: CrawlRunner
-    sync_worker: SyncWorker
+    sync_worker: _SyncWorkerLike
     # api-spec v2.5.0 — 수집 terminal 상태에서 발행할 completion event publisher.
     # 기본값 None(또는 Noop)이면 발행하지 않는다(local/PoC 안전). 운영 RabbitMQ wiring 은
     # infra/worker 진입점에서 주입한다.
