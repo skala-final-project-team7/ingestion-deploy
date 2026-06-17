@@ -165,6 +165,7 @@ class DeltaSyncRequest:
 class DeltaSyncResult:
     """Delta Sync 잡 결과 리포트."""
 
+    sync_id: str = ""
     changed_pages: int = 0
     deleted_candidate_page_ids: list[str] = field(default_factory=list)
     failed_items: int = 0
@@ -249,7 +250,7 @@ def run_delta_sync(
     finally:
         shutil.rmtree(output_dir, ignore_errors=True)
 
-    out = DeltaSyncResult()
+    out = DeltaSyncResult(sync_id=_extract_sync_id(result))
     for changed in result.changed_documents:
         if request.space_key and changed.space.get("space_key") != request.space_key:
             continue
@@ -276,6 +277,16 @@ def run_delta_sync(
     out.failed_items += len(result.failed_items)
     out.elapsed_ms = int((time.monotonic() - started) * 1000)
     return out
+
+
+def _extract_sync_id(result: Any) -> str:
+    """vendored Data Sync Agent 결과에서 sync_id 를 안전하게 추출한다."""
+    sync_id = getattr(result, "sync_id", "")
+    if sync_id:
+        return str(sync_id)
+    report = getattr(result, "report", None)
+    report_sync_id = getattr(report, "sync_id", "")
+    return str(report_sync_id) if report_sync_id else ""
 
 
 def _safe_changed_page_id(changed: Any) -> str:

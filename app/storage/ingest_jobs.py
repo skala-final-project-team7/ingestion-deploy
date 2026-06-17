@@ -32,6 +32,7 @@ import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from typing import Any
 
 from app.schemas.enums import IngestJobStatus
 
@@ -145,7 +146,7 @@ class MongoIngestJobStore(IngestJobStore):
     def __init__(self, mongo_uri: str, db_name: str, collection: str = "ingest_jobs") -> None:
         from pymongo import MongoClient
 
-        self._col = MongoClient(mongo_uri, tz_aware=True)[db_name][collection]
+        self._col: Any = MongoClient(mongo_uri, tz_aware=True)[db_name][collection]
 
     @staticmethod
     def _defaults() -> dict[str, object]:

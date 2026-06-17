@@ -256,6 +256,54 @@ def publish_ingest_completion(
     )
 
 
+def _record_sync_log(
+    deps: IngestDeps,
+    *,
+    job_id: str,
+    mode: str,
+    status: IngestJobStatus,
+    started_at: datetime | None,
+    finished_at: datetime,
+    sync_id: str | None = None,
+    updated_pages: int = 0,
+    deleted_pages: int = 0,
+    failed_pages: int = 0,
+    raw_status: str | None = None,
+    error: str | None = None,
+    metadata: Mapping[str, object] | None = None,
+) -> None:
+    """관리자 대시보드용 ``sync_logs`` 기록을 시도한다."""
+    repository = getattr(deps, "sync_log_repository", None)
+    if repository is None:
+        return
+
+    resolved_started_at = started_at or finished_at
+    duration_seconds = max(0, round((finished_at - resolved_started_at).total_seconds()))
+    document: dict[str, object] = {
+        "syncId": sync_id or job_id,
+        "jobId": job_id,
+        "mode": mode,
+        "status": status.value,
+        "updatedPages": max(0, updated_pages),
+        "deletedPages": max(0, deleted_pages),
+        "failedPages": max(0, failed_pages),
+        "startedAt": resolved_started_at,
+        "completedAt": finished_at,
+        "duration": duration_seconds,
+    }
+    if raw_status:
+        document["rawStatus"] = raw_status
+    if error:
+        document["error"] = error
+    if metadata:
+        document["metadata"] = dict(metadata)
+
+    try:
+        repository.record(document)
+    except Exception:  # noqa: BLE001 — 관리자 이력 기록 실패가 수집 terminal 처리를 막지 않음
+        _LOGGER.exception("sync log persistence failed: job_id=%s mode=%s", job_id, mode)
+
+
 def _publish_failed_completion(
     deps: IngestDeps,
     *,
@@ -263,6 +311,11 @@ def _publish_failed_completion(
     mode: str,
     admin_user_id: str | None,
     error: Exception,
+    started_at: datetime | None = None,
+    sync_id: str | None = None,
+    updated_pages: int = 0,
+    deleted_pages: int = 0,
+    failed_pages: int = 0,
 ) -> None:
     """실패 잡 종료 경로에서 completion 이벤트를 보장 발행한다.
 
@@ -291,6 +344,20 @@ def _publish_failed_completion(
         error_code="INGEST_FAILED",
         error=str(error),
         finished_at=finished_at,
+    )
+    _record_sync_log(
+        deps,
+        job_id=job_id,
+        mode=mode,
+        status=IngestJobStatus.FAILED,
+        started_at=started_at,
+        finished_at=finished_at,
+        sync_id=sync_id,
+        updated_pages=updated_pages,
+        deleted_pages=deleted_pages,
+        failed_pages=failed_pages,
+        raw_status="failed",
+        error=str(error),
     )
 
 
@@ -354,6 +421,7 @@ def run_ingest_job(
     실패 시 `_publish_failed_completion`를 호출해 BFF deactivate 트리거용 FAILED 이벤트를
     먼저 보장한다.
     """
+    started_at = datetime.now(UTC)
     deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
 
     try:
@@ -379,6 +447,7 @@ def run_ingest_job(
             mode=mode,
             admin_user_id=crawl_request.admin_user_id,
             error=exc,
+            started_at=started_at,
         )
         return
 
@@ -400,6 +469,17 @@ def run_ingest_job(
         admin_user_id=crawl_request.admin_user_id,
         finished_at=finished_at,
     )
+    _record_sync_log(
+        deps,
+        job_id=job_id,
+        mode=mode,
+        status=IngestJobStatus.COMPLETED,
+        started_at=started_at,
+        finished_at=finished_at,
+        updated_pages=result.pages_collected,
+        failed_pages=failed,
+        raw_status="completed",
+    )
 
 
 def run_delta_ingest_job(
@@ -415,6 +495,7 @@ def run_delta_ingest_job(
     delta 삭제 반영 단계(`apply_delta_deletions`) 예외도 동일 경로로 연결해
     수집 실패라도 deactivate 경로가 누락되지 않게 한다.
     """
+    started_at = datetime.now(UTC)
     deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
 
     try:
@@ -440,6 +521,7 @@ def run_delta_ingest_job(
             mode="delta",
             admin_user_id=delta_request.admin_user_id,
             error=exc,
+            started_at=started_at,
         )
         return
 
@@ -456,6 +538,11 @@ def run_delta_ingest_job(
             mode="delta",
             admin_user_id=delta_request.admin_user_id,
             error=exc,
+            started_at=started_at,
+            sync_id=result.sync_id,
+            updated_pages=result.changed_pages,
+            deleted_pages=len(result.deleted_candidate_page_ids),
+            failed_pages=result.failed_items,
         )
         return
 
@@ -488,4 +575,21 @@ def run_delta_ingest_job(
         status=IngestJobStatus.COMPLETED,
         admin_user_id=delta_request.admin_user_id,
         finished_at=finished_at,
+    )
+    _record_sync_log(
+        deps,
+        job_id=job_id,
+        mode="delta",
+        status=IngestJobStatus.COMPLETED,
+        started_at=started_at,
+        finished_at=finished_at,
+        sync_id=result.sync_id,
+        updated_pages=result.changed_pages,
+        deleted_pages=len(result.deleted_candidate_page_ids),
+        failed_pages=result.failed_items,
+        raw_status="completed",
+        metadata={
+            "softDeletedPages": delete_result.total_soft_deleted,
+            "softDeleteFailedPages": len(delete_result.failed_page_ids),
+        },
     )

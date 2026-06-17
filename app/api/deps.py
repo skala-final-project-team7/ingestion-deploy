@@ -37,7 +37,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -91,6 +91,13 @@ class _SyncWorkerLike(Protocol):
         ...
 
     def handle_webhook_event(self, event: WebhookDeleteEvent) -> SoftDeleteResult:
+        ...
+
+
+class _SyncLogRepositoryLike(Protocol):
+    """IngestDeps.sync_log_repository의 structural 타입."""
+
+    def record(self, record: Mapping[str, object] | object) -> None:
         ...
 
 
@@ -149,6 +156,9 @@ class IngestDeps:
     # auth-server 내부 API(``adminUserId`` 기준) credential 조회 seam.
     # 기본 None 이면 요청으로 전달된 access_token/cloud_id fallback 사용.
     credential_lookup: CredentialLookup | None = None
+    # 관리자 대시보드 동기화 이력용 MongoDB ``sync_logs`` writer.
+    # 기본 None 이면 local/PoC 안전 경로로 기록을 생략한다.
+    sync_log_repository: _SyncLogRepositoryLike | None = None
 
 
 def build_ingest_deps(settings: Settings) -> IngestDeps:
@@ -215,6 +225,7 @@ def _build_real_ingest_deps(settings: Settings, *, sync_worker: SyncWorker) -> I
         build_real_crawl_runner,
         build_real_delta_runner,
     )
+    from app.storage.sync_logs import MongoSyncLogRepository
 
     try:
         fallback_source: DocumentSourceAdapter | None = build_source_adapter(settings)
@@ -239,4 +250,5 @@ def _build_real_ingest_deps(settings: Settings, *, sync_worker: SyncWorker) -> I
         previous_snapshot_path=settings.data_sync_previous_snapshot,
         delta_delete_confirm=settings.data_sync_delta_delete_confirm,
         credential_lookup=credential_lookup,
+        sync_log_repository=MongoSyncLogRepository.from_settings(settings),
     )

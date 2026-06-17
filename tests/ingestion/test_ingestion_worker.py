@@ -27,6 +27,7 @@ from app.ingestion.workers.ingestion_worker import (
 from app.ingestion.workers.sync_worker import WebhookDeleteEvent
 from app.schemas.enums import IngestJobStatus
 from app.storage.ingest_jobs import IngestJobRecord
+from app.storage.sync_logs import FakeSyncLogRepository
 
 
 class _FakeJobStore:
@@ -704,16 +705,23 @@ def test_run_ingest_job_failure_still_publishes_failed_event_if_job_update_fails
 def test_run_delta_ingest_job_success_publishes_completed_and_invokes_delta_confirm() -> None:
     store = _FakeJobStore()
     completion_publisher = _FakeCompletionPublisher()
+    sync_logs = FakeSyncLogRepository()
     sync_worker = _FakeSyncWorker(
         delete_result=SoftDeleteResult(soft_deleted_page_ids=["p-1", "p-2"])
     )
     deps = IngestDeps(
         job_store=store,
         run_crawl=lambda _req: CrawlResult(space_key="CLOUD"),
-        run_delta=lambda _req: DeltaSyncResult(changed_pages=5, failed_items=2),
+        run_delta=lambda _req: DeltaSyncResult(
+            sync_id="sync-delta-success",
+            changed_pages=5,
+            deleted_candidate_page_ids=["p-1", "p-2"],
+            failed_items=2,
+        ),
         sync_worker=sync_worker,
         completion_publisher=completion_publisher,
         delta_delete_confirm=True,
+        sync_log_repository=sync_logs,
     )
 
     run_delta_ingest_job(
@@ -723,7 +731,12 @@ def test_run_delta_ingest_job_success_publishes_completed_and_invokes_delta_conf
     )
 
     assert sync_worker.calls[0] == (
-        DeltaSyncResult(changed_pages=5, failed_items=2),
+        DeltaSyncResult(
+            sync_id="sync-delta-success",
+            changed_pages=5,
+            deleted_candidate_page_ids=["p-1", "p-2"],
+            failed_items=2,
+        ),
         True,
     )
     delta_update = store.updates[-1][1]
@@ -739,17 +752,31 @@ def test_run_delta_ingest_job_success_publishes_completed_and_invokes_delta_conf
     assert payload["status"] == "COMPLETED"
     assert payload["adminUserId"] == "admin-delta"
     assert "accessToken" not in payload
+    [sync_log] = sync_logs.records
+    assert sync_log["syncId"] == "sync-delta-success"
+    assert sync_log["jobId"] == "job-delta-success"
+    assert sync_log["mode"] == "delta"
+    assert sync_log["status"] == "COMPLETED"
+    assert sync_log["updatedPages"] == 5
+    assert sync_log["deletedPages"] == 2
+    assert sync_log["failedPages"] == 2
+    assert sync_log["metadata"] == {
+        "softDeletedPages": 2,
+        "softDeleteFailedPages": 0,
+    }
 
 
 def test_run_delta_ingest_job_failure_publishes_failed_event() -> None:
     store = _FakeJobStore()
     completion_publisher = _FakeCompletionPublisher()
+    sync_logs = FakeSyncLogRepository()
     deps = IngestDeps(
         job_store=store,
         run_crawl=lambda _req: CrawlResult(space_key="CLOUD"),
         run_delta=lambda _req: (_ for _ in ()).throw(ValueError("delta failed")),
         sync_worker=_FakeSyncWorker(),
         completion_publisher=completion_publisher,
+        sync_log_repository=sync_logs,
     )
 
     run_delta_ingest_job(
@@ -764,6 +791,12 @@ def test_run_delta_ingest_job_failure_publishes_failed_event() -> None:
     payload = published.to_payload()
     assert payload["status"] == "FAILED"
     assert payload["errorCode"] == "INGEST_FAILED"
+    [sync_log] = sync_logs.records
+    assert sync_log["syncId"] == "job-delta-failed"
+    assert sync_log["jobId"] == "job-delta-failed"
+    assert sync_log["mode"] == "delta"
+    assert sync_log["status"] == "FAILED"
+    assert sync_log["error"] == "delta failed"
 
 
 def test_run_delta_ingest_job_failure_still_publishes_failed_event_if_delta_delete_fails() -> None:

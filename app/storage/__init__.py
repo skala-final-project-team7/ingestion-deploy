@@ -54,6 +54,7 @@ from app.storage.space_doc_type_cache import (
     SpaceDocTypeCache,
     SpaceDocTypeEntry,
 )
+from app.storage.sync_logs import FakeSyncLogRepository, MongoSyncLogRepository, SyncLogRepository
 
 __all__ = [
     "ChunkLookupRecord",
@@ -66,16 +67,19 @@ __all__ = [
     "FakeQdrantPoolStore",
     "FakeRawPageStore",
     "FakeSpaceDocTypeCache",
+    "FakeSyncLogRepository",
     "IngestionJobRecord",
     "IngestionJobsRepository",
     "MongoChunkTextLookup",
     "MongoEmbeddingCache",
     "MongoIngestionJobsRepository",
     "MongoRawPageStore",
+    "MongoSyncLogRepository",
     "MySQLSpaceDocTypeCache",
     "QdrantPoolStore",
     "RawPageStore",
     "SearchHit",
     "SpaceDocTypeCache",
     "SpaceDocTypeEntry",
+    "SyncLogRepository",
 ]
