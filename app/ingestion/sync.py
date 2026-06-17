@@ -159,6 +159,12 @@ class DeltaSyncRequest:
     # Legacy PoC: BFF→Ingestion 직접 전달(미확정 TBD). 로그·메시지 페이로드에 남기지 않는다.
     access_token: str | None = None
     cloud_id: str | None = None
+    # Full crawl 과 동일한 admin-key 경로. True 이면 OAuth scope 에 의존하지 않고
+    # admin API Token Basic 인증 + site URL 로 Data Sync Agent 를 실행한다.
+    use_admin_key: bool = False
+    site_url: str | None = None
+    admin_email: str | None = None
+    admin_api_token: str | None = None
 
 
 @dataclass
@@ -274,6 +280,7 @@ def run_delta_sync(
         out.changed_pages += 1
 
     out.deleted_candidate_page_ids = sorted(item.page_id for item in result.deleted_items)
+    _log_delta_failed_items(result.failed_items)
     out.failed_items += len(result.failed_items)
     out.elapsed_ms = int((time.monotonic() - started) * 1000)
     return out
@@ -305,7 +312,31 @@ def _build_sync_config(request: DeltaSyncRequest, *, output_dir: str) -> Any:
         access_token=request.access_token or "",
         output_dir=output_dir,
         previous_snapshot=request.previous_snapshot_path,
+        use_admin_key=request.use_admin_key,
+        site_url=request.site_url or "",
+        admin_email=request.admin_email or "",
+        admin_api_token=request.admin_api_token or "",
     )
+
+
+def _log_delta_failed_items(failed_items: list[Any]) -> None:
+    """Data Sync Agent 실패 상세를 운영 로그에 남긴다.
+
+    기존에는 개수만 집계되어 LIST_SPACES 401 같은 원인을 운영자가 확인하기 어려웠다.
+    token/header 문자열은 agent 쪽에서 이미 redaction 되지만, 여기서도 값 자체는 구조화
+    필드로만 남겨 credential 노출을 피한다.
+    """
+    for item in failed_items:
+        _LOGGER.warning(
+            "delta sync agent failed item: stage=%s item_type=%s item_id=%s "
+            "error_type=%s retryable=%s message=%s",
+            getattr(item, "stage", None),
+            getattr(item, "item_type", None),
+            getattr(item, "item_id", None),
+            getattr(item, "error_type", None),
+            getattr(item, "retryable", None),
+            getattr(item, "error_message", None),
+        )
 
 
 def _default_delta_workflow_runner() -> _DeltaSyncWorkflowRunner:

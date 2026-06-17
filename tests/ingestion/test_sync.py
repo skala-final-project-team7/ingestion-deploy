@@ -12,6 +12,7 @@ reconcile_deletions 는 본 테스트에서 건드리지 않는다(무수정 보
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -152,6 +153,74 @@ def test_run_delta_sync_counts_failed_items() -> None:
     assert result.changed_pages == 0
     assert result.deleted_candidate_page_ids == []
     assert result.failed_items == 2
+
+
+def test_run_delta_sync_passes_admin_key_config_to_agent() -> None:
+    store = FakeRawPageStore()
+    publisher = FakeQueuePublisher()
+    captured: dict[str, Any] = {}
+
+    def runner(
+        *,
+        config: Any,
+        client: Any | None = None,
+        snapshot_repository: Any | None = None,
+        force_sequential: bool = False,
+    ) -> SimpleNamespace:
+        captured["config"] = config
+        return SimpleNamespace(changed_documents=[], deleted_items=[], failed_items=[])
+
+    request = DeltaSyncRequest(
+        previous_snapshot_path="/tmp/previous_snapshot.json",
+        cloud_id="cloud-synthetic",
+        access_token="",
+        use_admin_key=True,
+        site_url="https://lina.atlassian.net",
+        admin_email="admin@example.com",
+        admin_api_token="admin-api-token",
+    )
+
+    result = run_delta_sync(
+        request,
+        raw_store=store,
+        publisher=publisher,
+        workflow_runner=runner,
+    )
+
+    config = captured["config"]
+    assert result.failed_items == 0
+    assert config.use_admin_key is True
+    assert config.site_url == "https://lina.atlassian.net"
+    assert config.admin_email == "admin@example.com"
+    assert config.admin_api_token == "admin-api-token"
+    assert config.access_token == ""
+
+
+def test_run_delta_sync_logs_failed_item_details(caplog) -> None:
+    store = FakeRawPageStore()
+    publisher = FakeQueuePublisher()
+    failed_item = SimpleNamespace(
+        stage="LIST_SPACES",
+        item_type="SYNC_JOB",
+        item_id=None,
+        error_type="auth_failure",
+        retryable=False,
+        error_message="Unauthorized; scope does not match",
+    )
+    runner = _fake_runner(changed=[], deleted=[], failed=[failed_item])
+
+    with caplog.at_level(logging.WARNING):
+        result = run_delta_sync(
+            _request(),
+            raw_store=store,
+            publisher=publisher,
+            workflow_runner=runner,
+        )
+
+    assert result.failed_items == 1
+    assert "LIST_SPACES" in caplog.text
+    assert "auth_failure" in caplog.text
+    assert "scope does not match" in caplog.text
 
 
 def test_run_delta_sync_uses_injected_acl_provider_over_space_synthesis() -> None:

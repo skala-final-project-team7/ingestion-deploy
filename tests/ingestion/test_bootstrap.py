@@ -16,10 +16,12 @@ from app.config import Settings
 from app.ingestion.bootstrap import (
     build_auth_server_requester,
     build_chunking_worker_deps,
+    build_delta_runner,
     build_document_analyzer,
     build_internal_credential_lookup,
     build_raw_page_store,
 )
+from app.ingestion.sync import DeltaSyncRequest, DeltaSyncResult
 from app.storage.jobs import FakeIngestionJobsRepository
 from app.storage.mongo_cache import FakeEmbeddingCache
 from app.storage.qdrant_fake import FakeQdrantPoolStore
@@ -211,6 +213,58 @@ def test_build_chunking_worker_deps_shares_provided_raw_store() -> None:
 
     # crawl 과 worker 가 같은 raw_store 인스턴스를 공유하도록 주입 가능(in-process PoC).
     assert deps.raw_store is shared
+
+
+def test_build_delta_runner_injects_admin_key_settings(monkeypatch) -> None:
+    import app.adapters.atlassian as atlassian_mod
+    import app.ingestion.sync as sync_mod
+
+    captured: dict[str, object] = {}
+
+    def _fake_run_delta_sync(
+        request: DeltaSyncRequest,
+        *,
+        raw_store,
+        publisher,
+        acl_provider=None,
+        site_url: str = "",
+    ) -> DeltaSyncResult:
+        captured["request"] = request
+        captured["site_url"] = site_url
+        captured["acl_provider"] = acl_provider
+        return DeltaSyncResult()
+
+    monkeypatch.setattr(atlassian_mod, "build_restriction_acl_provider", lambda _settings: "acl")
+    monkeypatch.setattr(sync_mod, "run_delta_sync", _fake_run_delta_sync)
+
+    settings = Settings(
+        atlassian_use_admin_key=True,
+        atlassian_cloud_id="settings-cloud",
+        atlassian_site_url="https://lina.atlassian.net",
+        atlassian_admin_email="admin@example.com",
+        atlassian_admin_api_token=SecretStr("admin-api-token"),
+    )
+
+    runner = build_delta_runner(settings, raw_store=FakeRawPageStore())
+    result = runner(
+        DeltaSyncRequest(
+            previous_snapshot_path="/tmp/previous.json",
+            admin_user_id="admin-1",
+            access_token="oauth-token",
+            cloud_id="resolved-cloud",
+        )
+    )
+
+    request = captured["request"]
+    assert isinstance(request, DeltaSyncRequest)
+    assert isinstance(result, DeltaSyncResult)
+    assert request.use_admin_key is True
+    assert request.site_url == "https://lina.atlassian.net"
+    assert request.admin_email == "admin@example.com"
+    assert request.admin_api_token == "admin-api-token"
+    assert request.cloud_id == "resolved-cloud"
+    assert captured["site_url"] == "https://lina.atlassian.net"
+    assert captured["acl_provider"] == "acl"
 
 
 def test_build_chunking_worker_deps_real_threads_embedder_dimension(monkeypatch) -> None:

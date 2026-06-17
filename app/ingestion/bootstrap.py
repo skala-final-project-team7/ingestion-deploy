@@ -345,7 +345,7 @@ def build_delta_runner(
 
     def _run_delta(request: DeltaSyncRequest) -> DeltaSyncResult:
         return run_delta_sync(
-            request,
+            _with_delta_admin_key_settings(request, resolved),
             raw_store=store,
             publisher=publisher,
             acl_provider=acl_provider,
@@ -353,6 +353,40 @@ def build_delta_runner(
         )
 
     return _run_delta
+
+
+def _with_delta_admin_key_settings(
+    request: DeltaSyncRequest,
+    settings: Settings,
+) -> DeltaSyncRequest:
+    """settings의 admin-key 설정을 Delta Sync Agent 요청으로 전달한다.
+
+    Full crawl 은 `build_request_source_adapter()`에서 settings 기반 admin-key client 를
+    사용한다. Delta 도 동일하게 `RAG_ATLASSIAN_USE_ADMIN_KEY=true`이면 OAuth access token
+    대신 admin API Token Basic 인증 경로를 쓰도록 DataSyncConfig 필드를 채운다.
+    """
+    if not settings.atlassian_use_admin_key:
+        return request
+
+    admin_api_token = settings.atlassian_admin_api_token.get_secret_value()
+    if not (settings.atlassian_site_url and settings.atlassian_admin_email and admin_api_token):
+        raise RuntimeError(
+            "delta admin-key 경로(RAG_ATLASSIAN_USE_ADMIN_KEY=true)에는 "
+            "RAG_ATLASSIAN_SITE_URL / RAG_ATLASSIAN_ADMIN_EMAIL / "
+            "RAG_ATLASSIAN_ADMIN_API_TOKEN 이 필수다"
+        )
+
+    return DeltaSyncRequest(
+        previous_snapshot_path=request.previous_snapshot_path,
+        space_key=request.space_key,
+        admin_user_id=request.admin_user_id,
+        access_token=request.access_token,
+        cloud_id=request.cloud_id or settings.atlassian_cloud_id or "admin-basic-site-url",
+        use_admin_key=True,
+        site_url=settings.atlassian_site_url,
+        admin_email=settings.atlassian_admin_email,
+        admin_api_token=admin_api_token,
+    )
 
 
 def build_soft_delete_store(settings: Settings | None = None) -> SoftDeleteStore:
