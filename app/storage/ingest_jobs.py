@@ -117,3 +117,82 @@ class InMemoryIngestJobStore(IngestJobStore):
             for key, value in changes.items():
                 setattr(record, key, value)
             return replace(record)
+
+
+class MongoIngestJobStore(IngestJobStore):
+    """Mongo 컬렉션 기반 **공유** 잡 저장소.
+
+    RabbitMQ 워커 프로세스와 HTTP API 프로세스가 같은 컬렉션을 공유하므로, 워커가 기록한
+    진행상태를 ``GET /ml/ingest/status/{jobId}`` 가 읽을 수 있다(InMemory 는 프로세스 격리로
+    공유 불가 — 통합 이슈 #8 해소).
+
+    ``update`` 는 **upsert** 한다: 워커는 ``create`` 없이 ``get``→``update`` 만 호출하므로
+    (BFF 가 jobId 를 발행하고 워커가 그대로 사용) 레코드 부재 시 첫 update 가 생성한다.
+    """
+
+    _MUTABLE_FIELDS = frozenset(
+        {
+            "status",
+            "started_at",
+            "total_pages",
+            "processed_pages",
+            "failed_pages",
+            "finished_at",
+            "error",
+        }
+    )
+
+    def __init__(self, mongo_uri: str, db_name: str, collection: str = "ingest_jobs") -> None:
+        from pymongo import MongoClient
+
+        self._col = MongoClient(mongo_uri, tz_aware=True)[db_name][collection]
+
+    @staticmethod
+    def _defaults() -> dict[str, object]:
+        return {
+            "status": IngestJobStatus.STARTED.value,
+            "started_at": datetime.now(UTC),
+            "total_pages": 0,
+            "processed_pages": 0,
+            "failed_pages": 0,
+            "finished_at": None,
+            "error": None,
+        }
+
+    def _to_record(self, doc: dict) -> IngestJobRecord:
+        return IngestJobRecord(
+            job_id=doc["_id"],
+            status=IngestJobStatus(doc["status"]),
+            started_at=doc["started_at"],
+            total_pages=doc.get("total_pages", 0),
+            processed_pages=doc.get("processed_pages", 0),
+            failed_pages=doc.get("failed_pages", 0),
+            finished_at=doc.get("finished_at"),
+            error=doc.get("error"),
+        )
+
+    def create(self, job_id: str | None = None) -> IngestJobRecord:
+        resolved = job_id or f"job-{uuid.uuid4()}"
+        self._col.update_one({"_id": resolved}, {"$setOnInsert": self._defaults()}, upsert=True)
+        record = self.get(resolved)
+        assert record is not None  # 방금 upsert 됨
+        return record
+
+    def get(self, job_id: str) -> IngestJobRecord | None:
+        doc = self._col.find_one({"_id": job_id})
+        return None if doc is None else self._to_record(doc)
+
+    def update(self, job_id: str, **changes: object) -> IngestJobRecord | None:
+        mapped: dict[str, object] = {}
+        for key, value in changes.items():
+            if key not in self._MUTABLE_FIELDS:
+                continue
+            mapped[key] = value.value if isinstance(value, IngestJobStatus) else value
+        if not mapped:
+            return self.get(job_id)
+        set_on_insert = {key: val for key, val in self._defaults().items() if key not in mapped}
+        update_doc: dict[str, object] = {"$set": mapped}
+        if set_on_insert:
+            update_doc["$setOnInsert"] = set_on_insert
+        self._col.update_one({"_id": job_id}, update_doc, upsert=True)
+        return self.get(job_id)

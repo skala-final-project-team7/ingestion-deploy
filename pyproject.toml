@@ -15,7 +15,7 @@ dependencies = [
     "httpx>=0.27",
     "tenacity>=8.3",               # Confluence/외부 호출 재시도
     # --- 수집 HTTP API (api-spec §2-2/§2-3/§2-4-2: /ml/ingest, status, health) ---
-    "fastapi>=0.111",              # 수집 트리거/상태/헬스 HTTP 엔드포인트
+    "fastapi>=0.111,<0.137",              # 수집 트리거/상태/헬스 HTTP 엔드포인트
     "uvicorn>=0.30",               # ASGI 서버 (app.api.main:app 실행 진입점)
     # --- LLM (문서 분석기 — doc_type 분류, FR-003 [Agent]) ---
     "openai>=1.30",                # GPT-4o-mini + Function Calling (스페이스 단위 doc_type 판별)
@@ -29,7 +29,7 @@ dependencies = [
     "pymysql>=1.1",
     # --- 운영 모니터링 ---
     "prometheus-client>=0.20",     # Worker 커스텀 메트릭 (수집/청킹/임베딩 잡 카운터·지연)
-    "prometheus-fastapi-instrumentator>=7.0",  # HTTP API /metrics (RAG Pipeline 앱과 동일 패턴)
+    "prometheus-fastapi-instrumentator>=7.0,<8",  # HTTP API /metrics (RAG Pipeline 앱과 동일 패턴)
 ]
 
 [project.optional-dependencies]

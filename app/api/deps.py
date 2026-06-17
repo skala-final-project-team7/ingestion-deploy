@@ -51,7 +51,11 @@ from app.ingestion.pipeline import run_poc_ingestion
 from app.ingestion.soft_delete import SoftDeleteResult
 from app.ingestion.sync import DeltaSyncRequest, DeltaSyncResult
 from app.ingestion.workers.sync_worker import SyncWorker, SyncWorkerDeps, WebhookDeleteEvent
-from app.storage.ingest_jobs import IngestJobRecord, InMemoryIngestJobStore
+from app.storage.ingest_jobs import (
+    IngestJobRecord,
+    InMemoryIngestJobStore,
+    MongoIngestJobStore,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -223,9 +227,9 @@ def _build_real_ingest_deps(settings: Settings, *, sync_worker: SyncWorker) -> I
     credential_lookup = _build_internal_credential_lookup(settings)
 
     return IngestDeps(
-        # NOTE(P2): 잡 수명주기 저장소는 단일 인스턴스 전제의 InMemory 다(재시작 시 진행
-        # 중 잡 상태 유실 — api-spec idempotent jobId 재요청으로 완화). durable 승급은 후속.
-        job_store=InMemoryIngestJobStore(),
+        # 잡 수명주기 저장소 = Mongo 공유 store. RabbitMQ 워커와 HTTP API 가 같은 컬렉션을
+        # 공유해야 GET /ml/ingest/status/{jobId} 가 워커 기록 진행상태를 읽는다(통합 이슈 #8).
+        job_store=MongoIngestJobStore(settings.mongo_uri, settings.mongo_db),
         run_crawl=build_real_crawl_runner(
             settings, fallback_source=fallback_source, raw_store=raw_store
         ),
