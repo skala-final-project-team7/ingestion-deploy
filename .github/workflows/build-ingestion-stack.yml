@@ -171,7 +171,7 @@ jobs:
       build_target: runtime
       run_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_number || github.run_number }}
       build_platforms: linux/amd64
-      manifest_event: ${{ secrets.MANIFEST_REPO_EVENT || 'harbor-image-updated' }}
+      manifest_event: harbor-image-updated
     secrets:
       HARBOR_URL: ${{ secrets.HARBOR_URL }}
       HARBOR_ID: ${{ secrets.HARBOR_ID }}
@@ -193,7 +193,7 @@ jobs:
       build_target: runtime
       run_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_number || github.run_number }}
       build_platforms: linux/amd64
-      manifest_event: ${{ secrets.MANIFEST_REPO_EVENT || 'harbor-image-updated' }}
+      manifest_event: harbor-image-updated
     secrets:
       HARBOR_URL: ${{ secrets.HARBOR_URL }}
       HARBOR_ID: ${{ secrets.HARBOR_ID }}
