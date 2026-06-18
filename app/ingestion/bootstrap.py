@@ -653,9 +653,7 @@ def _build_delta_snapshot_seed_request(
         return DeltaSnapshotSeedRequest(
             previous_snapshot_path=settings.data_sync_previous_snapshot,
             cloud_id=(
-                crawl_request.cloud_id
-                or settings.atlassian_cloud_id
-                or "admin-basic-site-url"
+                crawl_request.cloud_id or settings.atlassian_cloud_id or "admin-basic-site-url"
             ),
             access_token=crawl_request.access_token or "",
             use_admin_key=True,
@@ -671,8 +669,7 @@ def _build_delta_snapshot_seed_request(
         previous_snapshot_path=settings.data_sync_previous_snapshot,
         cloud_id=crawl_request.cloud_id or settings.atlassian_cloud_id,
         access_token=(
-            crawl_request.access_token
-            or settings.atlassian_access_token.get_secret_value()
+            crawl_request.access_token or settings.atlassian_access_token.get_secret_value()
         ),
         request_delay_seconds=settings.atlassian_request_delay_seconds,
         max_retries=settings.atlassian_max_retries,

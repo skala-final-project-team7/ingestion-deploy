@@ -228,6 +228,8 @@ Python 3.11 가상환경을 생성해 `.[ingestion,dev]` 의존성을 설치한 
 ## 2026-06-12 — featureI-7c Step 10 완료: ingest job DLQ 정책 반영 + 전체 테스트 검증
 
 **작업**: `ingest job` 큐에 DLQ 선언/재시도 제어를 적용하고, 실패 핸들링 정책 테스트를 추가한 뒤 전체 테스트를 통과시키는 방식으로 검증까지 완료.
+**주**: `app/ingestion/workers/ingest_job_main.py` 및 `tests/ingestion/test_ingest_job_main.py`는 현재 런타임에서 미사용되며,
+이후 정리 단계에서 파일이 제거되어 legacy 진입점은 더 이상 운영되지 않음.
 
 **변경 범위**
 

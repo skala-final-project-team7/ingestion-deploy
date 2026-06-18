@@ -69,14 +69,11 @@ CredentialLookup = Callable[[str], tuple[str | None, str | None]]
 class _IngestJobStoreLike(Protocol):
     """IngestDeps.job_store의 structural 타입."""
 
-    def create(self, job_id: str | None = None) -> IngestJobRecord:
-        ...
+    def create(self, job_id: str | None = None) -> IngestJobRecord: ...
 
-    def get(self, job_id: str) -> IngestJobRecord | None:
-        ...
+    def get(self, job_id: str) -> IngestJobRecord | None: ...
 
-    def update(self, job_id: str, **changes: object) -> IngestJobRecord | None:
-        ...
+    def update(self, job_id: str, **changes: object) -> IngestJobRecord | None: ...
 
 
 class _SyncWorkerLike(Protocol):
@@ -87,18 +84,15 @@ class _SyncWorkerLike(Protocol):
         result: DeltaSyncResult,
         *,
         confirm: bool,
-    ) -> SoftDeleteResult:
-        ...
+    ) -> SoftDeleteResult: ...
 
-    def handle_webhook_event(self, event: WebhookDeleteEvent) -> SoftDeleteResult:
-        ...
+    def handle_webhook_event(self, event: WebhookDeleteEvent) -> SoftDeleteResult: ...
 
 
 class _SyncLogRepositoryLike(Protocol):
     """IngestDeps.sync_log_repository의 structural 타입."""
 
-    def record(self, record: Mapping[str, object] | object) -> None:
-        ...
+    def record(self, record: Mapping[str, object] | object) -> None: ...
 
 
 def _build_internal_credential_lookup(settings: Settings) -> CredentialLookup | None:

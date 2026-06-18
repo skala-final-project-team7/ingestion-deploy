@@ -1,0 +1,204 @@
+name: Build and Deploy ingestion stack to Harbor
+
+defaults:
+  run:
+    shell: bash
+
+on:
+  push:
+    branches:
+      - deploy
+    paths:
+      - "app/config.py"
+      - "app/schemas/**"
+      - "app/storage/**"
+      - "Dockerfile.ingestion-api"
+      - "Dockerfile.ingestion-worker"
+      - "app/api/**"
+      - "app/ingestion/**"
+      - "pyproject.toml"
+      - "requirements*.txt"
+      - ".github/workflows/build-ingestion-stack.yml"
+  workflow_dispatch:
+    inputs:
+      run_number:
+        description: "run_number 대체값(비어 있으면 GitHub run_number 사용)"
+        required: false
+        default: ""
+      deploy_scope:
+        description: "수동 배포 대상 (기본: changed-only 아님)"
+        required: false
+        default: "force_both"
+        type: choice
+        options:
+          - force_both
+          - only_api
+          - only_worker
+          - changed_only
+      confirm_force_both:
+        description: "force_both 선택 시 반드시 'DEPLOY_BOTH' 입력"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  HARBOR_URL: ${{ secrets.HARBOR_URL }}
+  HARBOR_ID: ${{ secrets.HARBOR_ID }}
+  HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+  HARBOR_NAMESPACE: ${{ secrets.HARBOR_NAMESPACE }}
+
+  MANIFEST_REPO_OWNER: ${{ secrets.MANIFEST_REPO_OWNER }}
+  MANIFEST_REPO_NAME: ${{ secrets.MANIFEST_REPO_NAME }}
+  MANIFEST_REPO_TOKEN: ${{ secrets.MANIFEST_REPO_TOKEN }}
+  MANIFEST_REPO_EVENT: ${{ secrets.MANIFEST_REPO_EVENT || 'harbor-image-updated' }}
+
+jobs:
+  detect-changes:
+    name: Detect changed services
+    runs-on: ubuntu-latest
+    outputs:
+      stack_changed: ${{ steps.filter.outputs.stack }}
+      api_changed: ${{ steps.filter.outputs.api }}
+      worker_changed: ${{ steps.filter.outputs.worker }}
+      should_build_api: ${{ steps.plan.outputs.should_build_api }}
+      should_build_worker: ${{ steps.plan.outputs.should_build_worker }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            stack:
+              - "app/config.py"
+              - "app/schemas/**"
+              - "app/storage/**"
+              - "Dockerfile.ingestion-api"
+              - "Dockerfile.ingestion-worker"
+              - "app/api/**"
+              - "app/ingestion/**"
+              - "pyproject.toml"
+              - "requirements*.txt"
+            api:
+              - "Dockerfile.ingestion-api"
+              - "app/api/**"
+            worker:
+              - "Dockerfile.ingestion-worker"
+              - "app/ingestion/**"
+
+      - name: Resolve deploy scope for workflow_dispatch
+        id: plan
+        run: |
+          set -euo pipefail
+
+          STACK_CHANGED="${{ steps.filter.outputs.stack }}"
+          API_CHANGED="${{ steps.filter.outputs.api }}"
+          WORKER_CHANGED="${{ steps.filter.outputs.worker }}"
+          SCOPE="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_scope || 'auto' }}"
+          CONFIRM="${{ github.event.inputs.confirm_force_both }}"
+
+          SHOULD_API="false"
+          SHOULD_WORKER="false"
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            if [[ "${SCOPE}" == "only_api" ]]; then
+              SHOULD_API="true"
+            elif [[ "${SCOPE}" == "only_worker" ]]; then
+              SHOULD_WORKER="true"
+            elif [[ "${SCOPE}" == "changed_only" ]]; then
+              SHOULD_API="${API_CHANGED}"
+              SHOULD_WORKER="${WORKER_CHANGED}"
+            elif [[ "${SCOPE}" == "force_both" ]]; then
+              if [[ "${CONFIRM}" == "DEPLOY_BOTH" ]]; then
+                SHOULD_API="true"
+                SHOULD_WORKER="true"
+              else
+                echo "force_both was selected but confirm_force_both is not 'DEPLOY_BOTH'."
+                echo "Skip both deployment to avoid accidental all-service redeploy."
+              fi
+            fi
+          else
+            SHOULD_API="${STACK_CHANGED}"
+            SHOULD_WORKER="${STACK_CHANGED}"
+          fi
+
+          echo "should_build_api=${SHOULD_API}" >> "${GITHUB_OUTPUT}"
+          echo "should_build_worker=${SHOULD_WORKER}" >> "${GITHUB_OUTPUT}"
+          echo "api_changed=${API_CHANGED}" >> "${GITHUB_OUTPUT}"
+          echo "worker_changed=${WORKER_CHANGED}" >> "${GITHUB_OUTPUT}"
+          echo "stack_changed=${STACK_CHANGED}" >> "${GITHUB_OUTPUT}"
+
+  quality-gate:
+    name: Run quality gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python for quality checks
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "latest"
+
+      - name: Install quality-gate dependencies
+        run: |
+          uv pip install --system -e ".[dev,ingestion]"
+
+      - name: Run quality gate
+        if: ${{ hashFiles('scripts/test.sh') != '' }}
+        run: |
+          set -euo pipefail
+          ./scripts/verify.sh
+
+  build-ingestion-api:
+    name: Build & push ingestion-api
+    uses: ./.github/workflows/_core/build-and-deploy.yml
+    needs: [detect-changes, quality-gate]
+    if: ${{ needs.detect-changes.outputs.should_build_api == 'true' }}
+    with:
+      service_name: ingestion-api
+      dockerfile: Dockerfile.ingestion-api
+      context: .
+      build_target: runtime
+      run_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_number || github.run_number }}
+      build_platforms: linux/amd64
+      manifest_event: ${{ secrets.MANIFEST_REPO_EVENT || 'harbor-image-updated' }}
+    secrets:
+      HARBOR_URL: ${{ secrets.HARBOR_URL }}
+      HARBOR_ID: ${{ secrets.HARBOR_ID }}
+      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+      HARBOR_NAMESPACE: ${{ secrets.HARBOR_NAMESPACE }}
+      MANIFEST_REPO_OWNER: ${{ secrets.MANIFEST_REPO_OWNER }}
+      MANIFEST_REPO_NAME: ${{ secrets.MANIFEST_REPO_NAME }}
+      MANIFEST_REPO_TOKEN: ${{ secrets.MANIFEST_REPO_TOKEN }}
+
+  build-ingestion-worker:
+    name: Build & push ingestion-worker
+    uses: ./.github/workflows/_core/build-and-deploy.yml
+    needs: [detect-changes, quality-gate]
+    if: ${{ needs.detect-changes.outputs.should_build_worker == 'true' }}
+    with:
+      service_name: ingestion-worker
+      dockerfile: Dockerfile.ingestion-worker
+      context: .
+      build_target: runtime
+      run_number: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.run_number || github.run_number }}
+      build_platforms: linux/amd64
+      manifest_event: ${{ secrets.MANIFEST_REPO_EVENT || 'harbor-image-updated' }}
+    secrets:
+      HARBOR_URL: ${{ secrets.HARBOR_URL }}
+      HARBOR_ID: ${{ secrets.HARBOR_ID }}
+      HARBOR_PASSWORD: ${{ secrets.HARBOR_PASSWORD }}
+      HARBOR_NAMESPACE: ${{ secrets.HARBOR_NAMESPACE }}
+      MANIFEST_REPO_OWNER: ${{ secrets.MANIFEST_REPO_OWNER }}
+      MANIFEST_REPO_NAME: ${{ secrets.MANIFEST_REPO_NAME }}
+      MANIFEST_REPO_TOKEN: ${{ secrets.MANIFEST_REPO_TOKEN }}

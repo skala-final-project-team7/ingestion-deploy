@@ -534,8 +534,7 @@ def _promote_current_snapshot_to_baseline(
     source_path = Path(str(current_snapshot))
     if not source_path.exists():
         _LOGGER.warning(
-            "delta sync: current snapshot path does not exist, baseline not updated "
-            "(path=%s)",
+            "delta sync: current snapshot path does not exist, baseline not updated (path=%s)",
             source_path,
         )
         return False

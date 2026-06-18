@@ -1,27 +1,43 @@
-FROM python:3.11-slim
+# syntax=docker/dockerfile:1.7
+# BuildKit 캐시 구문을 활성화해 레이어 캐시를 최대화
+ARG BASE_IMAGE=python:3.11-slim
 
+# 빌더 스테이지: 의존성은 pyproject만으로 계산해 캐시 적중률 높임
+FROM ${BASE_IMAGE} AS builder
 WORKDIR /app
 
+# 런타임/빌드 공통 환경값을 먼저 고정하여 이미지 일관성 확보
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    UV_NO_CACHE=1 \
     UV_COMPILE_BYTECODE=1 \
+    UV_NO_CACHE=0 \
+    UV_CACHE_DIR=/root/.cache/uv \
     RAG_USE_REAL_ADAPTERS=true
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends git \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN useradd --create-home --system app
-
+# 변경 빈도가 낮은 의존성 정의부터 복사
 COPY pyproject.toml ./
-COPY app ./app
 
+# 의존성 설치는 소스 복사 전에 실행해 캐시 무효화를 줄임
 ARG INSTALL_EXTRAS="ingestion,embedding"
-RUN pip install --no-cache-dir uv \
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --no-cache-dir uv \
     && uv pip install --system -e ".[${INSTALL_EXTRAS}]"
 
+# 소스는 마지막에 복사해 코드 변경이 의존성 캐시를 덜 깨뜨리게 함
+COPY app ./app
+
+# 런타임 스테이지: 런타임 이미지는 실행 자산만 담아 최소화
+FROM ${BASE_IMAGE} AS runtime
+WORKDIR /app
+
+# 빌드 산출물만 가져와 Git/빌드 툴 없이 가볍게 동작
+COPY --from=builder /usr/local /usr/local
+COPY --from=builder /app/app ./app
+
+# non-root 실행 보안 기본값 적용
+RUN useradd --create-home --system app
 USER app
 
-CMD ["python", "-m", "app.ingestion.workers.chunking_main"]
+# shell entrypoint 제거, exec-form + CMD 옵션 분리
+ENTRYPOINT ["python"]
+CMD ["-m", "app.ingestion.workers.chunking_main"]

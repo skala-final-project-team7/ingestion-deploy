@@ -51,6 +51,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from prometheus_client import Counter, Histogram
+
 from app.ingestion.attachment_analyzer import analyze_attachment
 from app.ingestion.attachment_downloader import AttachmentDownloader, AttachmentDownloadError
 from app.ingestion.chunker import chunk_attachment, chunk_page
@@ -62,6 +64,48 @@ from app.storage.jobs import IngestionJobRecord, IngestionJobsRepository
 from app.storage.raw_store import RawPageStore
 
 _LOGGER = logging.getLogger(__name__)
+
+_WORKER_LATENCY_BUCKETS: tuple[float, ...] = (
+    0.1,
+    0.25,
+    0.5,
+    1.0,
+    2.5,
+    5.0,
+    10.0,
+    30.0,
+    60.0,
+    120.0,
+    300.0,
+    float("inf"),
+)
+
+ingestion_worker_messages_total = Counter(
+    "ingestion_worker_messages_total",
+    "Chunking worker processed messages by source type and ingestion status",
+    labelnames=("source_type", "status"),
+)
+ingestion_worker_chunks_total = Counter(
+    "ingestion_worker_chunks_total",
+    "Chunks produced by the chunking worker",
+    labelnames=("source_type",),
+)
+ingestion_worker_upserts_total = Counter(
+    "ingestion_worker_upserts_total",
+    "Chunks upserted by the chunking worker",
+    labelnames=("source_type",),
+)
+ingestion_worker_skipped_chunks_total = Counter(
+    "ingestion_worker_skipped_chunks_total",
+    "Chunks skipped by the chunking worker during indexing",
+    labelnames=("source_type",),
+)
+ingestion_worker_job_duration_seconds = Histogram(
+    "ingestion_worker_job_duration_seconds",
+    "Chunking worker job duration by stage and ingestion status",
+    labelnames=("stage", "status"),
+    buckets=_WORKER_LATENCY_BUCKETS,
+)
 
 # chunk_attachment 시그니처 — 파일 시스템 의존성을 갖는 함수라 deps 주입으로 테스트한다
 # (rag app/pipeline/ingestion_graph.py 의 ChunkAttachmentFn 패턴 정합).
@@ -380,7 +424,18 @@ def iter_chunking_worker(
     """
     for message in consumer.consume():
         try:
-            yield process_chunking_message(message, deps)
+            result = process_chunking_message(message, deps)
+            source_type = "attachment" if result.attachment_id else "page"
+            ingestion_worker_messages_total.labels(
+                source_type=source_type,
+                status=result.status.value,
+            ).inc()
+            ingestion_worker_chunks_total.labels(source_type=source_type).inc(result.chunks)
+            ingestion_worker_upserts_total.labels(source_type=source_type).inc(result.upserted)
+            ingestion_worker_skipped_chunks_total.labels(source_type=source_type).inc(
+                result.skipped
+            )
+            yield result
         except (RawPageNotFoundError, AttachmentNotFoundError) as exc:
             _LOGGER.warning(
                 "chunking worker: 파이프라인 불일치로 메시지 1건 skip — %s: %s",
@@ -426,6 +481,11 @@ def _record(
     """
     if deps.jobs is None:
         return
+    duration = (datetime.now(UTC) - started_at).total_seconds()
+    ingestion_worker_job_duration_seconds.labels(
+        stage=stage.value,
+        status=status.value,
+    ).observe(duration)
     deps.jobs.record(
         IngestionJobRecord(
             page_id=page_id,

@@ -28,9 +28,12 @@
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import time
 from types import FrameType
+
+from prometheus_client import start_http_server
 
 from app.config import Settings, get_settings
 from app.ingestion.bootstrap import build_chunking_worker_deps
@@ -43,6 +46,7 @@ _LOGGER = logging.getLogger(__name__)
 # 연결 실패 재시도 backoff(초) — 마지막 값으로 포화. RabbitMQ 가 늦게 떠도 워커가
 # crash-loop 대신 자체 재시도한다(k8s 재시작 정책과 중복돼도 무해).
 _RETRY_BACKOFF_SECONDS = (1, 2, 5, 10, 30)
+_DEFAULT_METRICS_PORT = 8002
 
 # SIGTERM(k8s 종료)·SIGINT 공용 종료 플래그 — consume loop 가 다음 메시지 경계에서 멈춘다.
 _shutdown_requested = False
@@ -124,6 +128,10 @@ def main() -> None:
     )
     signal.signal(signal.SIGTERM, _request_shutdown)
     signal.signal(signal.SIGINT, _request_shutdown)
+
+    metrics_port = int(os.environ.get("RAG_WORKER_METRICS_PORT", _DEFAULT_METRICS_PORT))
+    start_http_server(metrics_port)
+    _LOGGER.info("Prometheus metrics 서버 기동 — port=%s path=/metrics", metrics_port)
 
     settings = get_settings()
     _log_boot_mode(settings)
