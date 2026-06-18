@@ -79,7 +79,7 @@ def test_real_mode_boots_without_atlassian_credentials(monkeypatch: Any) -> None
     # v2.5.0 — 자격증명은 BFF 가 잡마다 전달한다. Settings 자격증명이 비어 있어도
     # (source_type=atlassian) 부팅은 성공하고, fallback 어댑터만 None 이어야 한다.
     calls = _patch_real_infra(monkeypatch)
-    settings = Settings(use_real_adapters=True, source_type="atlassian")
+    settings = Settings(_env_file=None, use_real_adapters=True, source_type="atlassian")
 
     deps = build_ingest_deps(settings)
 
@@ -167,3 +167,130 @@ def test_real_crawl_runner_without_any_adapter_fails_loud(monkeypatch: Any) -> N
 
     with pytest.raises(RuntimeError, match="어댑터를 결정할 수 없다"):
         runner(CrawlRequest())
+
+
+def test_real_crawl_runner_seeds_delta_snapshot_after_successful_full_crawl(
+    monkeypatch: Any,
+    tmp_path,
+) -> None:
+    from app.ingestion.crawler import CrawlRequest, CrawlResult
+    from app.ingestion.sync import DeltaSnapshotSeedResult
+
+    class _FakeJobsRepo:
+        @classmethod
+        def from_settings(cls, settings: Settings) -> _FakeJobsRepo:
+            return cls()
+
+    class _FakeConnection:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    import app.ingestion.crawler as crawler_mod
+    import app.storage.jobs as jobs_mod
+
+    connection = _FakeConnection()
+    captured: dict[str, Any] = {}
+
+    def _fake_run_full_crawl(*args: Any, **kwargs: Any) -> CrawlResult:
+        captured["run_full_crawl_kwargs"] = kwargs
+        return CrawlResult(space_key="", pages_collected=12)
+
+    def _fake_seed(request, *, minimum_collected_pages: int | None = None):
+        captured["seed_request"] = request
+        captured["minimum_collected_pages"] = minimum_collected_pages
+        return DeltaSnapshotSeedResult(seeded=True, pages_seeded=12)
+
+    monkeypatch.setattr(jobs_mod, "MongoIngestionJobsRepository", _FakeJobsRepo)
+    monkeypatch.setattr(bootstrap, "open_rabbitmq_channel", lambda settings: (connection, object()))
+    monkeypatch.setattr(bootstrap, "build_request_source_adapter", lambda *args, **kwargs: object())
+    monkeypatch.setattr(crawler_mod, "run_full_crawl", _fake_run_full_crawl)
+    monkeypatch.setattr(bootstrap, "seed_delta_snapshot_from_current_metadata", _fake_seed)
+
+    settings = Settings(
+        _env_file=None,
+        use_real_adapters=True,
+        source_type="atlassian",
+        data_sync_previous_snapshot=str(tmp_path / "latest_snapshot.json"),
+        atlassian_use_admin_key=True,
+        atlassian_cloud_id="settings-cloud",
+        atlassian_site_url="https://lina.atlassian.net",
+        atlassian_admin_email="admin@example.com",
+        atlassian_admin_api_token=SecretStr("admin-api-token"),
+    )
+    runner = bootstrap.build_real_crawl_runner(
+        settings, fallback_source=None, raw_store=FakeRawPageStore()
+    )
+
+    result = runner(CrawlRequest(access_token="oauth-token", cloud_id="runtime-cloud"))
+
+    seed_request = captured["seed_request"]
+    assert result.pages_collected == 12
+    assert captured["minimum_collected_pages"] == 12
+    assert seed_request.previous_snapshot_path == str(tmp_path / "latest_snapshot.json")
+    assert seed_request.cloud_id == "runtime-cloud"
+    assert seed_request.use_admin_key is True
+    assert seed_request.site_url == "https://lina.atlassian.net"
+    assert seed_request.admin_email == "admin@example.com"
+    assert seed_request.admin_api_token == "admin-api-token"
+    assert connection.closed is True
+
+
+def test_real_crawl_runner_skips_delta_snapshot_seed_on_partial_failure(
+    monkeypatch: Any,
+    tmp_path,
+) -> None:
+    from app.ingestion.crawler import CrawlRequest, CrawlResult
+
+    class _FakeJobsRepo:
+        @classmethod
+        def from_settings(cls, settings: Settings) -> _FakeJobsRepo:
+            return cls()
+
+    class _FakeConnection:
+        def close(self) -> None:
+            return None
+
+    import app.ingestion.crawler as crawler_mod
+    import app.storage.jobs as jobs_mod
+
+    seed_calls: list[object] = []
+
+    monkeypatch.setattr(jobs_mod, "MongoIngestionJobsRepository", _FakeJobsRepo)
+    monkeypatch.setattr(
+        bootstrap,
+        "open_rabbitmq_channel",
+        lambda settings: (_FakeConnection(), object()),
+    )
+    monkeypatch.setattr(bootstrap, "build_request_source_adapter", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        crawler_mod,
+        "run_full_crawl",
+        lambda *args, **kwargs: CrawlResult(
+            space_key="",
+            pages_collected=11,
+            failed_page_ids=["page-missing"],
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "seed_delta_snapshot_from_current_metadata",
+        lambda *args, **kwargs: seed_calls.append(args),
+    )
+
+    settings = Settings(
+        _env_file=None,
+        use_real_adapters=True,
+        source_type="atlassian",
+        data_sync_previous_snapshot=str(tmp_path / "latest_snapshot.json"),
+    )
+    runner = bootstrap.build_real_crawl_runner(
+        settings, fallback_source=None, raw_store=FakeRawPageStore()
+    )
+
+    result = runner(CrawlRequest(access_token="oauth-token", cloud_id="runtime-cloud"))
+
+    assert result.failed_page_ids == ["page-missing"]
+    assert seed_calls == []

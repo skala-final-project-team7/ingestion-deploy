@@ -26,12 +26,59 @@ from datetime import UTC, datetime
 from app.api.deps import IngestDeps
 from app.api.ingest_completion import IngestCompletionEvent, publish_ingest_completion_safely
 from app.ingestion.crawler import CrawlRequest
+from app.ingestion.progress import IngestProgress, IngestProgressCallback
 from app.ingestion.sync import DeltaSyncRequest
 from app.schemas.enums import IngestJobStatus
 
 _LOGGER = logging.getLogger(__name__)
 
 CredentialLookup = Callable[[str], tuple[str | None, str | None]]
+_TERMINAL_STATUSES = frozenset({IngestJobStatus.COMPLETED, IngestJobStatus.FAILED})
+
+
+def _build_job_progress_callback(deps: IngestDeps, job_id: str) -> IngestProgressCallback:
+    """Agent progress 이벤트를 `/ml/ingest/status` 카운터에 반영한다."""
+
+    def _callback(progress: IngestProgress) -> None:
+        record = deps.job_store.get(job_id)
+        if record is not None and record.status in _TERMINAL_STATUSES:
+            return
+
+        updates: dict[str, object] = {"status": IngestJobStatus.IN_PROGRESS}
+        _copy_non_negative_int(
+            progress,
+            updates,
+            source_key="total_pages",
+            target_key="total_pages",
+        )
+        _copy_non_negative_int(
+            progress,
+            updates,
+            source_key="processed_pages",
+            target_key="processed_pages",
+        )
+        _copy_non_negative_int(
+            progress,
+            updates,
+            source_key="failed_pages",
+            target_key="failed_pages",
+        )
+        if len(updates) > 1:
+            deps.job_store.update(job_id, **updates)
+
+    return _callback
+
+
+def _copy_non_negative_int(
+    progress: IngestProgress,
+    updates: dict[str, object],
+    *,
+    source_key: str,
+    target_key: str,
+) -> None:
+    value = progress.get(source_key)
+    if isinstance(value, int):
+        updates[target_key] = max(0, value)
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,7 +469,14 @@ def run_ingest_job(
     먼저 보장한다.
     """
     started_at = datetime.now(UTC)
-    deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
+    progress_callback = _build_job_progress_callback(deps, job_id)
+    deps.job_store.update(
+        job_id,
+        status=IngestJobStatus.IN_PROGRESS,
+        total_pages=0,
+        processed_pages=0,
+        failed_pages=0,
+    )
 
     try:
         access_token, cloud_id = _resolve_runtime_credentials(
@@ -437,6 +491,7 @@ def run_ingest_job(
             admin_user_id=crawl_request.admin_user_id,
             access_token=access_token,
             cloud_id=cloud_id,
+            progress_callback=progress_callback,
         )
         result = deps.run_crawl(request)
     except Exception as exc:  # noqa: BLE001 — 잡 단위 예외 격리
@@ -496,7 +551,14 @@ def run_delta_ingest_job(
     수집 실패라도 deactivate 경로가 누락되지 않게 한다.
     """
     started_at = datetime.now(UTC)
-    deps.job_store.update(job_id, status=IngestJobStatus.IN_PROGRESS)
+    progress_callback = _build_job_progress_callback(deps, job_id)
+    deps.job_store.update(
+        job_id,
+        status=IngestJobStatus.IN_PROGRESS,
+        total_pages=0,
+        processed_pages=0,
+        failed_pages=0,
+    )
 
     try:
         access_token, cloud_id = _resolve_runtime_credentials(
@@ -511,6 +573,7 @@ def run_delta_ingest_job(
             access_token=access_token,
             cloud_id=cloud_id,
             admin_user_id=delta_request.admin_user_id,
+            progress_callback=progress_callback,
         )
         result = deps.run_delta(request)
     except Exception as exc:  # noqa: BLE001 — 잡 단위 예외 격리

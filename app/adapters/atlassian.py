@@ -95,6 +95,7 @@ _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from app.config import Settings
+    from app.ingestion.progress import IngestProgressCallback
 
 # space_fallback 은 2026-06-11 제거 — ACL 값에 space key 를 싣는 레거시 폐기(ADR 0002 superseded).
 EMPTY_RESTRICTION_POLICIES = frozenset({"mark_missing", "allow_authenticated"})
@@ -131,7 +132,13 @@ def normalize_webui_link(webui_link: str, site_url: str) -> str:
 class _WorkflowRunner(Protocol):
     """vendored full crawl workflow 호출 시그니처 — 테스트 주입 지점."""
 
-    def __call__(self, *, config: Any, client: Any | None = None) -> Any:
+    def __call__(
+        self,
+        *,
+        config: Any,
+        client: Any | None = None,
+        progress_callback: IngestProgressCallback | None = None,
+    ) -> Any:
         """Full crawl workflow 를 실행하고 ``.documents`` 를 가진 결과를 반환한다."""
 
 
@@ -357,6 +364,7 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         site_url: str = "",
         admin_email: str = "",
         admin_api_token: str = "",
+        progress_callback: IngestProgressCallback | None = None,
     ) -> None:
         self._cloud_id = cloud_id
         self._access_token = access_token
@@ -372,6 +380,7 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         # 필수 검증하는 admin credential (v0.1.0 에는 없던 필드).
         self._admin_email = admin_email
         self._admin_api_token = admin_api_token
+        self._progress_callback = progress_callback
 
     @classmethod
     def from_settings(cls, settings: Settings) -> AtlassianSourceAdapter:
@@ -461,7 +470,14 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         runner = self._workflow_runner or _default_workflow_runner()
         config = self._build_config(output_dir=tempfile.mkdtemp(prefix="ingestion-agent-"))
         try:
-            result = runner(config=config, client=self._client)
+            if self._progress_callback is None:
+                result = runner(config=config, client=self._client)
+            else:
+                result = runner(
+                    config=config,
+                    client=self._client,
+                    progress_callback=self._progress_callback,
+                )
             return list(result.documents)
         finally:
             shutil.rmtree(str(config.output_dir), ignore_errors=True)
@@ -775,6 +791,37 @@ def _build_admin_confluence_client(settings: Settings) -> Any:
             super().__init__(config=config)
             # 상대 경로("/spaces" 등 v2 API)의 기준을 게이트웨이 → site 로 교체.
             self.base_url = f"{site_url}/wiki/api/v2"
+            self._space_id_by_homepage_id: dict[str, str] = {}
+
+        def list_spaces(self) -> list[dict[str, Any]]:
+            spaces = super().list_spaces()
+            self._space_id_by_homepage_id = {
+                str(space.get("homepageId")): str(space.get("id"))
+                for space in spaces
+                if space.get("homepageId") and space.get("id")
+            }
+            return spaces
+
+        def list_space_pages(self, space_id: str) -> list[dict[str, Any]]:
+            if not space_id:
+                raise ValueError("space_id is required")
+            return self._get_paginated(
+                f"/spaces/{space_id}/pages",
+                {"limit": 25, "body-format": "storage"},
+            )
+
+        def list_page_descendants(self, homepage_id: str) -> list[dict[str, Any]]:
+            """Old vendored workflow compatibility: route homepage crawl to space pages.
+
+            ingestion-deploy can run against a pinned lina-ai-agents version whose full crawl
+            workflow still calls `list_page_descendants(homepageId)`. For admin-key full crawl,
+            keep that old workflow working while changing the effective enumeration to the
+            canonical `/spaces/{spaceId}/pages` endpoint.
+            """
+            space_id = self._space_id_by_homepage_id.get(str(homepage_id))
+            if space_id:
+                return self.list_space_pages(space_id)
+            return super().list_page_descendants(homepage_id)
 
         def _headers(self) -> dict[str, str]:
             return {

@@ -36,17 +36,21 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import tempfile
 import time
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
+from uuid import uuid4
 
 from app.adapters.atlassian import PageAclProvider, normalize_webui_link
 from app.adapters.base import DocumentSourceAdapter
 from app.adapters.json_fixture import parse_atlassian_datetime
 from app.ingestion.crawler import build_chunking_message
+from app.ingestion.progress import IngestProgressCallback
 from app.ingestion.workers import QUEUE_CHUNKING
 from app.ingestion.workers.publisher import QueuePublisher
 from app.schemas.page_object import PageObject
@@ -59,6 +63,11 @@ if TYPE_CHECKING:
     from app.storage.qdrant_client import QdrantPoolStore
 
 _LOGGER = logging.getLogger(__name__)
+
+_SNAPSHOT_BASELINE_BLOCKING_STAGES = frozenset(
+    {"list_spaces", "fetch_page_metadata", "diff_snapshots"}
+)
+_RETRYABLE_DETAIL_STAGES = frozenset({"fetch_page_detail", "transform_changed_html"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +174,11 @@ class DeltaSyncRequest:
     site_url: str | None = None
     admin_email: str | None = None
     admin_api_token: str | None = None
+    progress_callback: IngestProgressCallback | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass
@@ -178,6 +192,32 @@ class DeltaSyncResult:
     elapsed_ms: int = 0
 
 
+@dataclass
+class DeltaSnapshotSeedRequest:
+    """Full crawl 직후 delta baseline snapshot seed 입력."""
+
+    previous_snapshot_path: str
+    cloud_id: str
+    access_token: str = ""
+    use_admin_key: bool = False
+    site_url: str = ""
+    admin_email: str = ""
+    admin_api_token: str = ""
+    request_delay_seconds: float = 0.3
+    max_retries: int = 3
+    timeout_seconds: int = 20
+
+
+@dataclass
+class DeltaSnapshotSeedResult:
+    """Full crawl 후 delta baseline seed 결과."""
+
+    seeded: bool
+    pages_seeded: int = 0
+    skipped_reason: str = ""
+    elapsed_ms: int = 0
+
+
 class _DeltaSyncWorkflowRunner(Protocol):
     """vendored delta sync workflow 호출 시그니처 — 테스트 주입 지점."""
 
@@ -188,6 +228,7 @@ class _DeltaSyncWorkflowRunner(Protocol):
         client: Any | None = None,
         snapshot_repository: Any | None = None,
         force_sequential: bool = False,
+        progress_callback: IngestProgressCallback | None = None,
     ) -> Any:
         """Delta sync workflow 를 실행하고 changed/deleted 결과를 반환한다."""
 
@@ -247,11 +288,18 @@ def run_delta_sync(
     output_dir = tempfile.mkdtemp(prefix="sync-agent-")
     try:
         config = _build_sync_config(request, output_dir=output_dir)
-        result = runner(
-            config=config,
-            client=client,
-            snapshot_repository=snapshot_repository,
-            force_sequential=force_sequential,
+        runner_kwargs: dict[str, Any] = {
+            "config": config,
+            "client": client,
+            "snapshot_repository": snapshot_repository,
+            "force_sequential": force_sequential,
+        }
+        if request.progress_callback is not None:
+            runner_kwargs["progress_callback"] = request.progress_callback
+        result = runner(**runner_kwargs)
+        _promote_current_snapshot_to_baseline(
+            result=result,
+            previous_snapshot_path=request.previous_snapshot_path,
         )
     finally:
         shutil.rmtree(output_dir, ignore_errors=True)
@@ -317,6 +365,206 @@ def _build_sync_config(request: DeltaSyncRequest, *, output_dir: str) -> Any:
         admin_email=request.admin_email or "",
         admin_api_token=request.admin_api_token or "",
     )
+
+
+def seed_delta_snapshot_from_current_metadata(
+    request: DeltaSnapshotSeedRequest,
+    *,
+    client: Any | None = None,
+    snapshot_repository: Any | None = None,
+    minimum_collected_pages: int | None = None,
+) -> DeltaSnapshotSeedResult:
+    """현재 Confluence metadata를 delta previous snapshot으로 저장한다.
+
+    Full crawl 직후 이 baseline을 남기면 다음 delta sync가 "최초 실행"으로 모든 페이지를
+    changed 처리하지 않고, 실제 변경 여부만 비교할 수 있다. Snapshot item 생성은 Data Sync
+    Agent의 `map_page_metadata_to_snapshot_item`을 그대로 사용해 delta와 문자열 포맷을 맞춘다.
+
+    Args:
+        request: delta baseline 저장 경로와 Confluence credential.
+        client: 테스트용 metadata client. None이면 Data Sync Agent ConfluenceMetadataClient 생성.
+        snapshot_repository: 테스트용 repository. None이면 LocalSnapshotRepository 사용.
+        minimum_collected_pages: full crawl이 실제 수집한 페이지 수. metadata snapshot 페이지 수가
+            이 값보다 크면 full crawl이 일부 페이지를 놓친 것으로 보고 baseline 저장을 건너뛴다.
+
+    Returns:
+        seed 여부와 저장된 page 수.
+    """
+    started = time.monotonic()
+    if not request.previous_snapshot_path:
+        return DeltaSnapshotSeedResult(
+            seeded=False,
+            skipped_reason="missing_previous_snapshot_path",
+        )
+
+    output_dir = tempfile.mkdtemp(prefix="sync-seed-")
+    try:
+        config = _build_snapshot_seed_config(request, output_dir=output_dir)
+        metadata_client = client or _default_metadata_client(config)
+        pages = _collect_current_snapshot_pages(metadata_client, cloud_id=config.cloud_id)
+        if minimum_collected_pages is not None and len(pages) > minimum_collected_pages:
+            return DeltaSnapshotSeedResult(
+                seeded=False,
+                pages_seeded=len(pages),
+                skipped_reason="metadata_pages_exceed_full_crawl_pages",
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+            )
+
+        generated_at = _utc_now_iso()
+        seed_id = f"full-crawl-seed-{uuid4().hex}"
+        snapshot = _build_page_snapshot(
+            sync_id=seed_id,
+            cloud_id=config.cloud_id,
+            generated_at=generated_at,
+            pages=pages,
+        )
+        repository = snapshot_repository or _default_snapshot_repository(output_dir)
+        repository.save_current_snapshot(
+            snapshot,
+            snapshot_path=request.previous_snapshot_path,
+            generated_at=generated_at,
+        )
+        return DeltaSnapshotSeedResult(
+            seeded=True,
+            pages_seeded=len(pages),
+            elapsed_ms=int((time.monotonic() - started) * 1000),
+        )
+    finally:
+        shutil.rmtree(output_dir, ignore_errors=True)
+
+
+def _build_snapshot_seed_config(request: DeltaSnapshotSeedRequest, *, output_dir: str) -> Any:
+    from data_sync_agent.config import DataSyncConfig
+
+    return DataSyncConfig(
+        cloud_id=request.cloud_id,
+        access_token=request.access_token,
+        output_dir=output_dir,
+        previous_snapshot=request.previous_snapshot_path,
+        request_delay_seconds=request.request_delay_seconds,
+        max_retries=request.max_retries,
+        timeout_seconds=request.timeout_seconds,
+        use_admin_key=request.use_admin_key,
+        site_url=request.site_url,
+        admin_email=request.admin_email,
+        admin_api_token=request.admin_api_token,
+    )
+
+
+def _default_metadata_client(config: Any) -> Any:
+    from data_sync_agent.confluence import ConfluenceMetadataClient
+
+    return ConfluenceMetadataClient(config=config)
+
+
+def _default_snapshot_repository(output_dir: str) -> Any:
+    from data_sync_agent.sync import LocalSnapshotRepository
+
+    return LocalSnapshotRepository(output_dir)
+
+
+def _collect_current_snapshot_pages(client: Any, *, cloud_id: str) -> list[Any]:
+    from data_sync_agent.confluence import map_page_metadata_to_snapshot_item
+
+    pages: list[Any] = []
+    for space in client.list_spaces():
+        space_id = str(space.get("id") or "")
+        if not space_id:
+            raise ValueError("space id is required for delta snapshot seed")
+        pages.extend(
+            map_page_metadata_to_snapshot_item(page, space=space, cloud_id=cloud_id)
+            for page in client.list_space_pages(space_id)
+        )
+    return pages
+
+
+def _build_page_snapshot(
+    *,
+    sync_id: str,
+    cloud_id: str,
+    generated_at: str,
+    pages: list[Any],
+) -> Any:
+    from data_sync_agent.schemas import PageSnapshot
+
+    return PageSnapshot(
+        snapshot_id=f"current-{sync_id}",
+        sync_id=sync_id,
+        cloud_id=cloud_id,
+        created_at=generated_at,
+        pages=pages,
+    )
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _promote_current_snapshot_to_baseline(
+    *,
+    result: Any,
+    previous_snapshot_path: str,
+) -> bool:
+    """성공적으로 생성된 current snapshot을 다음 delta의 previous baseline으로 승격한다.
+
+    Data Sync Agent는 current snapshot을 `config.output_dir` 아래에 저장한다. ingestion
+    wrapper는 output_dir를 임시 디렉터리로 만들고 정리하므로, 여기서 명시적으로
+    `previous_snapshot_path`로 복사하지 않으면 다음 delta가 매번 빈 baseline으로 시작한다.
+
+    Space 목록/metadata 수집 실패는 current snapshot 자체가 불완전하다는 뜻이므로 baseline을
+    갱신하지 않는다. 반면 non-retryable page detail 실패(예: archived/test page 404)는 metadata
+    snapshot의 완전성을 깨지 않으므로 baseline 승격을 허용한다.
+    """
+    if not previous_snapshot_path:
+        return False
+    if not _should_promote_current_snapshot(getattr(result, "failed_items", [])):
+        _LOGGER.warning(
+            "delta sync: current snapshot was not promoted because metadata collection "
+            "was incomplete"
+        )
+        return False
+
+    output_paths = getattr(result, "output_paths", None)
+    if not isinstance(output_paths, dict):
+        return False
+    current_snapshot = output_paths.get("current_snapshot")
+    if not current_snapshot:
+        return False
+
+    source_path = Path(str(current_snapshot))
+    if not source_path.exists():
+        _LOGGER.warning(
+            "delta sync: current snapshot path does not exist, baseline not updated "
+            "(path=%s)",
+            source_path,
+        )
+        return False
+
+    target_path = Path(previous_snapshot_path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = target_path.with_name(f".{target_path.name}.{time.time_ns()}.tmp")
+    try:
+        shutil.copyfile(source_path, temp_path)
+        os.replace(temp_path, target_path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+    return True
+
+
+def _should_promote_current_snapshot(failed_items: list[Any]) -> bool:
+    for item in failed_items:
+        stage = _failed_item_stage(item)
+        if stage in _SNAPSHOT_BASELINE_BLOCKING_STAGES:
+            return False
+        if stage in _RETRYABLE_DETAIL_STAGES and bool(getattr(item, "retryable", False)):
+            return False
+    return True
+
+
+def _failed_item_stage(item: Any) -> str:
+    raw_stage = getattr(item, "stage", "")
+    value = getattr(raw_stage, "value", raw_stage)
+    return str(value).lower()
 
 
 def _log_delta_failed_items(failed_items: list[Any]) -> None:

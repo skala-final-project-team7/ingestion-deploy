@@ -52,7 +52,13 @@ from typing import TYPE_CHECKING, Any, cast
 
 from app.config import Settings, get_settings
 from app.ingestion.embedder.base import FakeDenseEmbedder, FakeSparseEmbedder
-from app.ingestion.sync import DeltaSyncRequest, DeltaSyncResult
+from app.ingestion.progress import IngestProgressCallback
+from app.ingestion.sync import (
+    DeltaSnapshotSeedRequest,
+    DeltaSyncRequest,
+    DeltaSyncResult,
+    seed_delta_snapshot_from_current_metadata,
+)
 from app.ingestion.workers.chunking_worker import ChunkingWorkerDeps
 from app.ingestion.workers.publisher import (
     _DEFAULT_ROUTING_KEY,
@@ -386,6 +392,7 @@ def _with_delta_admin_key_settings(
         site_url=settings.atlassian_site_url,
         admin_email=settings.atlassian_admin_email,
         admin_api_token=admin_api_token,
+        progress_callback=request.progress_callback,
     )
 
 
@@ -474,7 +481,11 @@ def open_rabbitmq_channel(settings: Settings | None = None) -> tuple[Any, Any]:
 
 
 def build_request_source_adapter(
-    settings: Settings, *, cloud_id: str, access_token: str
+    settings: Settings,
+    *,
+    cloud_id: str,
+    access_token: str,
+    progress_callback: IngestProgressCallback | None = None,
 ) -> DocumentSourceAdapter:
     """요청 주입 자격증명 + Settings 의 ACL/재시도 구성으로 Atlassian 어댑터를 만든다.
 
@@ -510,6 +521,7 @@ def build_request_source_adapter(
         # 한정으로 전달).
         admin_email=settings.atlassian_admin_email,
         admin_api_token=settings.atlassian_admin_api_token.get_secret_value(),
+        progress_callback=progress_callback,
     )
 
 
@@ -552,7 +564,10 @@ def build_real_crawl_runner(
             and request.cloud_id
         ):
             adapter: DocumentSourceAdapter = build_request_source_adapter(
-                settings, cloud_id=request.cloud_id, access_token=request.access_token
+                settings,
+                cloud_id=request.cloud_id,
+                access_token=request.access_token,
+                progress_callback=request.progress_callback,
             )
         elif fallback_source is not None:
             adapter = fallback_source
@@ -563,17 +578,106 @@ def build_real_crawl_runner(
             )
         connection, channel = open_rabbitmq_channel(settings)
         try:
-            return run_full_crawl(
+            result = run_full_crawl(
                 request,
                 raw_store=store,
                 publisher=PikaQueuePublisher(channel),
                 adapter=adapter,
                 jobs=jobs,
             )
+            _seed_delta_snapshot_after_full_crawl(settings, request=request, result=result)
+            return result
         finally:
             connection.close()
 
     return _run
+
+
+def _seed_delta_snapshot_after_full_crawl(
+    settings: Settings,
+    *,
+    request: CrawlRequest,
+    result: CrawlResult,
+) -> None:
+    """Full crawl 성공 후 다음 delta의 previous snapshot baseline을 저장한다."""
+    if settings.source_type.lower() != "atlassian":
+        return
+    if request.space_key:
+        _LOGGER.info(
+            "full crawl delta snapshot seed skipped: scoped crawl is not a global baseline "
+            "(space_key=%s)",
+            request.space_key,
+        )
+        return
+    if result.failed_page_ids or result.failed_attachment_ids:
+        _LOGGER.warning(
+            "full crawl delta snapshot seed skipped: full crawl had failures "
+            "(failed_pages=%d failed_attachments=%d)",
+            len(result.failed_page_ids),
+            len(result.failed_attachment_ids),
+        )
+        return
+
+    try:
+        seed_result = seed_delta_snapshot_from_current_metadata(
+            _build_delta_snapshot_seed_request(settings, request),
+            minimum_collected_pages=result.pages_collected,
+        )
+    except Exception:
+        _LOGGER.warning(
+            "full crawl delta snapshot seed failed; next delta may treat all pages as new",
+            exc_info=True,
+        )
+        return
+
+    if seed_result.seeded:
+        _LOGGER.info(
+            "full crawl delta snapshot seed completed: pages=%d elapsed_ms=%d",
+            seed_result.pages_seeded,
+            seed_result.elapsed_ms,
+        )
+    else:
+        _LOGGER.warning(
+            "full crawl delta snapshot seed skipped: reason=%s metadata_pages=%d",
+            seed_result.skipped_reason,
+            seed_result.pages_seeded,
+        )
+
+
+def _build_delta_snapshot_seed_request(
+    settings: Settings,
+    crawl_request: CrawlRequest,
+) -> DeltaSnapshotSeedRequest:
+    if settings.atlassian_use_admin_key:
+        admin_api_token = settings.atlassian_admin_api_token.get_secret_value()
+        return DeltaSnapshotSeedRequest(
+            previous_snapshot_path=settings.data_sync_previous_snapshot,
+            cloud_id=(
+                crawl_request.cloud_id
+                or settings.atlassian_cloud_id
+                or "admin-basic-site-url"
+            ),
+            access_token=crawl_request.access_token or "",
+            use_admin_key=True,
+            site_url=settings.atlassian_site_url,
+            admin_email=settings.atlassian_admin_email,
+            admin_api_token=admin_api_token,
+            request_delay_seconds=settings.atlassian_request_delay_seconds,
+            max_retries=settings.atlassian_max_retries,
+            timeout_seconds=settings.atlassian_timeout_seconds,
+        )
+
+    return DeltaSnapshotSeedRequest(
+        previous_snapshot_path=settings.data_sync_previous_snapshot,
+        cloud_id=crawl_request.cloud_id or settings.atlassian_cloud_id,
+        access_token=(
+            crawl_request.access_token
+            or settings.atlassian_access_token.get_secret_value()
+        ),
+        request_delay_seconds=settings.atlassian_request_delay_seconds,
+        max_retries=settings.atlassian_max_retries,
+        timeout_seconds=settings.atlassian_timeout_seconds,
+    )
 
 
 def build_real_delta_runner(

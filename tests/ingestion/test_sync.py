@@ -12,11 +12,17 @@ reconcile_deletions 는 본 테스트에서 건드리지 않는다(무수정 보
 
 from __future__ import annotations
 
+import json
 import logging
 from types import SimpleNamespace
 from typing import Any
 
-from app.ingestion.sync import DeltaSyncRequest, run_delta_sync
+from app.ingestion.sync import (
+    DeltaSnapshotSeedRequest,
+    DeltaSyncRequest,
+    run_delta_sync,
+    seed_delta_snapshot_from_current_metadata,
+)
 from app.ingestion.workers import QUEUE_CHUNKING
 from app.ingestion.workers.publisher import FakeQueuePublisher
 from app.storage.raw_store import FakeRawPageStore
@@ -76,6 +82,77 @@ def _request() -> DeltaSyncRequest:
     )
 
 
+class _FakeMetadataClient:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def list_spaces(self) -> list[dict[str, Any]]:
+        self.calls.append("list_spaces")
+        return [{"id": "space-1", "key": "ENG", "name": "Engineering"}]
+
+    def list_space_pages(self, space_id: str) -> list[dict[str, Any]]:
+        self.calls.append(f"list_space_pages:{space_id}")
+        return [
+            {
+                "id": "page-1",
+                "title": "Runbook",
+                "status": "current",
+                "lastModifiedAt": "2026-05-14T01:00:00Z",
+                "version": {"number": 3},
+                "_links": {"webui": "/wiki/spaces/ENG/pages/page-1/Runbook"},
+            }
+        ]
+
+
+def test_seed_delta_snapshot_from_current_metadata_writes_previous_snapshot(tmp_path) -> None:
+    snapshot_path = tmp_path / "state" / "latest_snapshot.json"
+    client = _FakeMetadataClient()
+    request = DeltaSnapshotSeedRequest(
+        previous_snapshot_path=str(snapshot_path),
+        cloud_id="cloud-synthetic",
+        access_token="token-synthetic",
+        request_delay_seconds=0,
+    )
+
+    result = seed_delta_snapshot_from_current_metadata(
+        request,
+        client=client,
+        minimum_collected_pages=1,
+    )
+
+    payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    pages = payload["snapshot"]["pages"]
+    assert result.seeded is True
+    assert result.pages_seeded == 1
+    assert client.calls == ["list_spaces", "list_space_pages:space-1"]
+    assert payload["format_version"] == "data-sync-snapshot-v1"
+    assert payload["snapshot"]["cloud_id"] == "cloud-synthetic"
+    assert pages[0]["page_id"] == "page-1"
+    assert pages[0]["version_number"] == 3
+    assert pages[0]["last_modified_at"] == "2026-05-14T01:00:00Z"
+
+
+def test_seed_delta_snapshot_skips_when_full_crawl_collected_fewer_pages(tmp_path) -> None:
+    snapshot_path = tmp_path / "state" / "latest_snapshot.json"
+    request = DeltaSnapshotSeedRequest(
+        previous_snapshot_path=str(snapshot_path),
+        cloud_id="cloud-synthetic",
+        access_token="token-synthetic",
+        request_delay_seconds=0,
+    )
+
+    result = seed_delta_snapshot_from_current_metadata(
+        request,
+        client=_FakeMetadataClient(),
+        minimum_collected_pages=0,
+    )
+
+    assert result.seeded is False
+    assert result.pages_seeded == 1
+    assert result.skipped_reason == "metadata_pages_exceed_full_crawl_pages"
+    assert not snapshot_path.exists()
+
+
 def test_run_delta_sync_reingests_changed_pages_and_collects_deletes() -> None:
     store = FakeRawPageStore()
     publisher = FakeQueuePublisher()
@@ -113,6 +190,52 @@ def test_run_delta_sync_reingests_changed_pages_and_collects_deletes() -> None:
         "version_number": 4,
         "source_type": "page",
     }
+
+
+def test_run_delta_sync_passes_progress_callback_to_workflow_runner() -> None:
+    events: list[dict[str, object]] = []
+
+    def runner(
+        *,
+        config: Any,
+        client: Any | None = None,
+        snapshot_repository: Any | None = None,
+        force_sequential: bool = False,
+        progress_callback: Any | None = None,
+    ) -> SimpleNamespace:
+        assert progress_callback is not None
+        progress_callback(
+            {
+                "phase": "changed_page_processed",
+                "total_pages": 2,
+                "processed_pages": 1,
+                "failed_pages": 0,
+            }
+        )
+        return SimpleNamespace(
+            changed_documents=[],
+            deleted_items=[],
+            failed_items=[],
+        )
+
+    request = _request()
+    request.progress_callback = events.append
+
+    run_delta_sync(
+        request,
+        raw_store=FakeRawPageStore(),
+        publisher=FakeQueuePublisher(),
+        workflow_runner=runner,
+    )
+
+    assert events == [
+        {
+            "phase": "changed_page_processed",
+            "total_pages": 2,
+            "processed_pages": 1,
+            "failed_pages": 0,
+        }
+    ]
 
 
 def test_run_delta_sync_filters_by_requested_space_key() -> None:
@@ -153,6 +276,117 @@ def test_run_delta_sync_counts_failed_items() -> None:
     assert result.changed_pages == 0
     assert result.deleted_candidate_page_ids == []
     assert result.failed_items == 2
+
+
+def test_run_delta_sync_promotes_current_snapshot_to_previous_baseline(tmp_path) -> None:
+    store = FakeRawPageStore()
+    publisher = FakeQueuePublisher()
+    previous_snapshot = tmp_path / "state" / "latest_snapshot.json"
+
+    def runner(
+        *,
+        config: Any,
+        client: Any | None = None,
+        snapshot_repository: Any | None = None,
+        force_sequential: bool = False,
+    ) -> SimpleNamespace:
+        current_snapshot = config.output_dir / "snapshots" / "latest_snapshot.json"
+        current_snapshot.parent.mkdir(parents=True, exist_ok=True)
+        current_snapshot.write_text('{"snapshot":"current"}\n', encoding="utf-8")
+        return SimpleNamespace(
+            changed_documents=[],
+            deleted_items=[],
+            failed_items=[],
+            output_paths={"current_snapshot": str(current_snapshot)},
+        )
+
+    request = DeltaSyncRequest(
+        previous_snapshot_path=str(previous_snapshot),
+        cloud_id="cloud-synthetic",
+        access_token="token-synthetic",
+    )
+
+    result = run_delta_sync(request, raw_store=store, publisher=publisher, workflow_runner=runner)
+
+    assert result.changed_pages == 0
+    assert previous_snapshot.read_text(encoding="utf-8") == '{"snapshot":"current"}\n'
+
+
+def test_run_delta_sync_does_not_promote_incomplete_metadata_snapshot(tmp_path) -> None:
+    store = FakeRawPageStore()
+    publisher = FakeQueuePublisher()
+    previous_snapshot = tmp_path / "state" / "latest_snapshot.json"
+
+    def runner(
+        *,
+        config: Any,
+        client: Any | None = None,
+        snapshot_repository: Any | None = None,
+        force_sequential: bool = False,
+    ) -> SimpleNamespace:
+        current_snapshot = config.output_dir / "snapshots" / "latest_snapshot.json"
+        current_snapshot.parent.mkdir(parents=True, exist_ok=True)
+        current_snapshot.write_text('{"snapshot":"partial"}\n', encoding="utf-8")
+        return SimpleNamespace(
+            changed_documents=[],
+            deleted_items=[],
+            failed_items=[
+                SimpleNamespace(stage="fetch_page_metadata", retryable=True, item_id="space-1")
+            ],
+            output_paths={"current_snapshot": str(current_snapshot)},
+        )
+
+    request = DeltaSyncRequest(
+        previous_snapshot_path=str(previous_snapshot),
+        cloud_id="cloud-synthetic",
+        access_token="token-synthetic",
+    )
+
+    result = run_delta_sync(request, raw_store=store, publisher=publisher, workflow_runner=runner)
+
+    assert result.failed_items == 1
+    assert not previous_snapshot.exists()
+
+
+def test_run_delta_sync_promotes_snapshot_with_non_retryable_detail_failure(tmp_path) -> None:
+    store = FakeRawPageStore()
+    publisher = FakeQueuePublisher()
+    previous_snapshot = tmp_path / "state" / "latest_snapshot.json"
+
+    def runner(
+        *,
+        config: Any,
+        client: Any | None = None,
+        snapshot_repository: Any | None = None,
+        force_sequential: bool = False,
+    ) -> SimpleNamespace:
+        current_snapshot = config.output_dir / "snapshots" / "latest_snapshot.json"
+        current_snapshot.parent.mkdir(parents=True, exist_ok=True)
+        current_snapshot.write_text('{"snapshot":"complete"}\n', encoding="utf-8")
+        return SimpleNamespace(
+            changed_documents=[],
+            deleted_items=[],
+            failed_items=[
+                SimpleNamespace(
+                    stage="fetch_page_detail",
+                    retryable=False,
+                    error_type="item_not_found",
+                    item_id="archived-page",
+                )
+            ],
+            output_paths={"current_snapshot": str(current_snapshot)},
+        )
+
+    request = DeltaSyncRequest(
+        previous_snapshot_path=str(previous_snapshot),
+        cloud_id="cloud-synthetic",
+        access_token="token-synthetic",
+    )
+
+    result = run_delta_sync(request, raw_store=store, publisher=publisher, workflow_runner=runner)
+
+    assert result.failed_items == 1
+    assert previous_snapshot.read_text(encoding="utf-8") == '{"snapshot":"complete"}\n'
 
 
 def test_run_delta_sync_passes_admin_key_config_to_agent() -> None:

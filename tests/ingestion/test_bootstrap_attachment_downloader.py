@@ -27,6 +27,7 @@ def test_build_attachment_downloader_none_for_fixture_source() -> None:
 
 def test_build_attachment_downloader_http_for_atlassian_source() -> None:
     settings = Settings(
+        _env_file=None,
         source_type="atlassian",
         atlassian_access_token=SecretStr("tok"),
         atlassian_use_admin_key=True,
@@ -45,6 +46,7 @@ def test_build_attachment_downloader_http_for_atlassian_source() -> None:
 
 def test_build_attachment_downloader_allowlist_follows_configured_base_url() -> None:
     settings = Settings(
+        _env_file=None,
         source_type="atlassian",
         atlassian_access_token=SecretStr("tok"),
         atlassian_api_base_url="https://tenant.example.net",
