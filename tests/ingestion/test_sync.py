@@ -192,6 +192,52 @@ def test_run_delta_sync_reingests_changed_pages_and_collects_deletes() -> None:
     }
 
 
+def test_run_delta_sync_passes_progress_callback_to_workflow_runner() -> None:
+    events: list[dict[str, object]] = []
+
+    def runner(
+        *,
+        config: Any,
+        client: Any | None = None,
+        snapshot_repository: Any | None = None,
+        force_sequential: bool = False,
+        progress_callback: Any | None = None,
+    ) -> SimpleNamespace:
+        assert progress_callback is not None
+        progress_callback(
+            {
+                "phase": "changed_page_processed",
+                "total_pages": 2,
+                "processed_pages": 1,
+                "failed_pages": 0,
+            }
+        )
+        return SimpleNamespace(
+            changed_documents=[],
+            deleted_items=[],
+            failed_items=[],
+        )
+
+    request = _request()
+    request.progress_callback = events.append
+
+    run_delta_sync(
+        request,
+        raw_store=FakeRawPageStore(),
+        publisher=FakeQueuePublisher(),
+        workflow_runner=runner,
+    )
+
+    assert events == [
+        {
+            "phase": "changed_page_processed",
+            "total_pages": 2,
+            "processed_pages": 1,
+            "failed_pages": 0,
+        }
+    ]
+
+
 def test_run_delta_sync_filters_by_requested_space_key() -> None:
     store = FakeRawPageStore()
     publisher = FakeQueuePublisher()

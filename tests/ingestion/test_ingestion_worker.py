@@ -261,6 +261,52 @@ def test_run_ingest_job_resolves_credentials_and_passes_to_crawl_request() -> No
     assert completion_publisher.events[0].to_payload()["status"] == "COMPLETED"
 
 
+def test_run_ingest_job_updates_progress_from_crawl_callback() -> None:
+    store = _FakeJobStore()
+    completion_publisher = _FakeCompletionPublisher()
+
+    def _run_crawl(request: CrawlRequest) -> CrawlResult:
+        assert request.progress_callback is not None
+        request.progress_callback(
+            {
+                "phase": "page_detail_processed",
+                "total_pages": 10,
+                "processed_pages": 4,
+                "failed_pages": 1,
+            }
+        )
+        return CrawlResult(space_key="CLOUD", pages_collected=9, failed_page_ids=["failed-1"])
+
+    deps = IngestDeps(
+        job_store=store,
+        run_crawl=_run_crawl,
+        sync_worker=_FakeSyncWorker(),
+        completion_publisher=completion_publisher,
+    )
+
+    run_ingest_job(
+        deps,
+        job_id="job-progress",
+        mode="full",
+        crawl_request=CrawlRequest(admin_user_id="admin-1"),
+    )
+
+    progress_updates = [
+        update
+        for _, update in store.updates
+        if update.get("processed_pages") == 4 and update.get("failed_pages") == 1
+    ]
+    assert progress_updates == [
+        {
+            "status": IngestJobStatus.IN_PROGRESS,
+            "total_pages": 10,
+            "processed_pages": 4,
+            "failed_pages": 1,
+        }
+    ]
+    assert store.updates[-1][1]["status"] == IngestJobStatus.COMPLETED
+
+
 def test_run_ingest_job_resolves_credentials_and_uses_cloud_id_in_confluence_api_url() -> None:
     store = _FakeJobStore()
     completion_publisher = _FakeCompletionPublisher()
@@ -764,6 +810,52 @@ def test_run_delta_ingest_job_success_publishes_completed_and_invokes_delta_conf
         "softDeletedPages": 2,
         "softDeleteFailedPages": 0,
     }
+
+
+def test_run_delta_ingest_job_updates_progress_from_delta_callback() -> None:
+    store = _FakeJobStore()
+    completion_publisher = _FakeCompletionPublisher()
+
+    def _run_delta(request: DeltaSyncRequest) -> DeltaSyncResult:
+        assert request.progress_callback is not None
+        request.progress_callback(
+            {
+                "phase": "changed_page_processed",
+                "total_pages": 5,
+                "processed_pages": 2,
+                "failed_pages": 0,
+            }
+        )
+        return DeltaSyncResult(sync_id="sync-progress", changed_pages=5)
+
+    deps = IngestDeps(
+        job_store=store,
+        run_crawl=lambda _req: CrawlResult(space_key="CLOUD"),
+        run_delta=_run_delta,
+        sync_worker=_FakeSyncWorker(),
+        completion_publisher=completion_publisher,
+    )
+
+    run_delta_ingest_job(
+        deps,
+        job_id="job-delta-progress",
+        delta_request=DeltaSyncRequest(previous_snapshot_path="", admin_user_id="admin-delta"),
+    )
+
+    progress_updates = [
+        update
+        for _, update in store.updates
+        if update.get("processed_pages") == 2 and update.get("total_pages") == 5
+    ]
+    assert progress_updates == [
+        {
+            "status": IngestJobStatus.IN_PROGRESS,
+            "total_pages": 5,
+            "processed_pages": 2,
+            "failed_pages": 0,
+        }
+    ]
+    assert store.updates[-1][1]["status"] == IngestJobStatus.COMPLETED
 
 
 def test_run_delta_ingest_job_failure_publishes_failed_event() -> None:

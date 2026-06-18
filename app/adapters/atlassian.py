@@ -95,6 +95,7 @@ _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from app.config import Settings
+    from app.ingestion.progress import IngestProgressCallback
 
 # space_fallback 은 2026-06-11 제거 — ACL 값에 space key 를 싣는 레거시 폐기(ADR 0002 superseded).
 EMPTY_RESTRICTION_POLICIES = frozenset({"mark_missing", "allow_authenticated"})
@@ -131,7 +132,13 @@ def normalize_webui_link(webui_link: str, site_url: str) -> str:
 class _WorkflowRunner(Protocol):
     """vendored full crawl workflow 호출 시그니처 — 테스트 주입 지점."""
 
-    def __call__(self, *, config: Any, client: Any | None = None) -> Any:
+    def __call__(
+        self,
+        *,
+        config: Any,
+        client: Any | None = None,
+        progress_callback: IngestProgressCallback | None = None,
+    ) -> Any:
         """Full crawl workflow 를 실행하고 ``.documents`` 를 가진 결과를 반환한다."""
 
 
@@ -357,6 +364,7 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         site_url: str = "",
         admin_email: str = "",
         admin_api_token: str = "",
+        progress_callback: IngestProgressCallback | None = None,
     ) -> None:
         self._cloud_id = cloud_id
         self._access_token = access_token
@@ -372,6 +380,7 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         # 필수 검증하는 admin credential (v0.1.0 에는 없던 필드).
         self._admin_email = admin_email
         self._admin_api_token = admin_api_token
+        self._progress_callback = progress_callback
 
     @classmethod
     def from_settings(cls, settings: Settings) -> AtlassianSourceAdapter:
@@ -461,7 +470,14 @@ class AtlassianSourceAdapter(DocumentSourceAdapter):
         runner = self._workflow_runner or _default_workflow_runner()
         config = self._build_config(output_dir=tempfile.mkdtemp(prefix="ingestion-agent-"))
         try:
-            result = runner(config=config, client=self._client)
+            if self._progress_callback is None:
+                result = runner(config=config, client=self._client)
+            else:
+                result = runner(
+                    config=config,
+                    client=self._client,
+                    progress_callback=self._progress_callback,
+                )
             return list(result.documents)
         finally:
             shutil.rmtree(str(config.output_dir), ignore_errors=True)

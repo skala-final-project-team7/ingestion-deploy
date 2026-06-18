@@ -50,6 +50,7 @@ from app.adapters.atlassian import PageAclProvider, normalize_webui_link
 from app.adapters.base import DocumentSourceAdapter
 from app.adapters.json_fixture import parse_atlassian_datetime
 from app.ingestion.crawler import build_chunking_message
+from app.ingestion.progress import IngestProgressCallback
 from app.ingestion.workers import QUEUE_CHUNKING
 from app.ingestion.workers.publisher import QueuePublisher
 from app.schemas.page_object import PageObject
@@ -173,6 +174,11 @@ class DeltaSyncRequest:
     site_url: str | None = None
     admin_email: str | None = None
     admin_api_token: str | None = None
+    progress_callback: IngestProgressCallback | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass
@@ -222,6 +228,7 @@ class _DeltaSyncWorkflowRunner(Protocol):
         client: Any | None = None,
         snapshot_repository: Any | None = None,
         force_sequential: bool = False,
+        progress_callback: IngestProgressCallback | None = None,
     ) -> Any:
         """Delta sync workflow 를 실행하고 changed/deleted 결과를 반환한다."""
 
@@ -281,12 +288,15 @@ def run_delta_sync(
     output_dir = tempfile.mkdtemp(prefix="sync-agent-")
     try:
         config = _build_sync_config(request, output_dir=output_dir)
-        result = runner(
-            config=config,
-            client=client,
-            snapshot_repository=snapshot_repository,
-            force_sequential=force_sequential,
-        )
+        runner_kwargs: dict[str, Any] = {
+            "config": config,
+            "client": client,
+            "snapshot_repository": snapshot_repository,
+            "force_sequential": force_sequential,
+        }
+        if request.progress_callback is not None:
+            runner_kwargs["progress_callback"] = request.progress_callback
+        result = runner(**runner_kwargs)
         _promote_current_snapshot_to_baseline(
             result=result,
             previous_snapshot_path=request.previous_snapshot_path,

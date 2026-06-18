@@ -44,6 +44,7 @@ from datetime import UTC, datetime
 
 from app.adapters.atlassian import AtlassianSourceAdapter
 from app.adapters.base import DocumentSourceAdapter
+from app.ingestion.progress import IngestProgressCallback
 from app.ingestion.workers import QUEUE_CHUNKING
 from app.ingestion.workers.publisher import QueuePublisher
 from app.schemas.enums import IngestionStage, IngestionStatus, SourceType
@@ -67,6 +68,11 @@ class CrawlRequest:
     # Legacy PoC: BFF→Ingestion 직접 전달(미확정 TBD). 로그·메시지 페이로드에 남기지 않는다.
     access_token: str | None = None
     cloud_id: str | None = None
+    progress_callback: IngestProgressCallback | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass

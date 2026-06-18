@@ -52,6 +52,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from app.config import Settings, get_settings
 from app.ingestion.embedder.base import FakeDenseEmbedder, FakeSparseEmbedder
+from app.ingestion.progress import IngestProgressCallback
 from app.ingestion.sync import (
     DeltaSnapshotSeedRequest,
     DeltaSyncRequest,
@@ -391,6 +392,7 @@ def _with_delta_admin_key_settings(
         site_url=settings.atlassian_site_url,
         admin_email=settings.atlassian_admin_email,
         admin_api_token=admin_api_token,
+        progress_callback=request.progress_callback,
     )
 
 
@@ -479,7 +481,11 @@ def open_rabbitmq_channel(settings: Settings | None = None) -> tuple[Any, Any]:
 
 
 def build_request_source_adapter(
-    settings: Settings, *, cloud_id: str, access_token: str
+    settings: Settings,
+    *,
+    cloud_id: str,
+    access_token: str,
+    progress_callback: IngestProgressCallback | None = None,
 ) -> DocumentSourceAdapter:
     """요청 주입 자격증명 + Settings 의 ACL/재시도 구성으로 Atlassian 어댑터를 만든다.
 
@@ -515,6 +521,7 @@ def build_request_source_adapter(
         # 한정으로 전달).
         admin_email=settings.atlassian_admin_email,
         admin_api_token=settings.atlassian_admin_api_token.get_secret_value(),
+        progress_callback=progress_callback,
     )
 
 
@@ -557,7 +564,10 @@ def build_real_crawl_runner(
             and request.cloud_id
         ):
             adapter: DocumentSourceAdapter = build_request_source_adapter(
-                settings, cloud_id=request.cloud_id, access_token=request.access_token
+                settings,
+                cloud_id=request.cloud_id,
+                access_token=request.access_token,
+                progress_callback=request.progress_callback,
             )
         elif fallback_source is not None:
             adapter = fallback_source
