@@ -161,7 +161,7 @@ jobs:
 
   build-ingestion-api:
     name: Build & push ingestion-api
-    uses: ./.github/workflows/_core/build-and-deploy.yml
+    uses: ./.github/workflows/build-and-deploy.yml
     needs: [detect-changes, quality-gate]
     if: ${{ needs.detect-changes.outputs.should_build_api == 'true' }}
     with:
@@ -183,7 +183,7 @@ jobs:
 
   build-ingestion-worker:
     name: Build & push ingestion-worker
-    uses: ./.github/workflows/_core/build-and-deploy.yml
+    uses: ./.github/workflows/build-and-deploy.yml
     needs: [detect-changes, quality-gate]
     if: ${{ needs.detect-changes.outputs.should_build_worker == 'true' }}
     with:
