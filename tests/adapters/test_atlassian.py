@@ -41,18 +41,24 @@ class _FakeConfluenceClient:
         self,
         *,
         spaces: list[dict[str, Any]],
-        descendants_by_homepage: dict[str, list[dict[str, Any]]],
+        pages_by_space: dict[str, list[dict[str, Any]]],
         details_by_page: dict[str, dict[str, Any]],
     ) -> None:
         self.spaces = spaces
-        self.descendants_by_homepage = descendants_by_homepage
+        self.pages_by_space = pages_by_space
         self.details_by_page = details_by_page
 
     def list_spaces(self) -> list[dict[str, Any]]:
         return self.spaces
 
     def list_page_descendants(self, homepage_id: str) -> list[dict[str, Any]]:
-        return self.descendants_by_homepage.get(homepage_id, [])
+        for space in self.spaces:
+            if space.get("homepageId") == homepage_id:
+                return self.pages_by_space.get(str(space.get("id") or ""), [])
+        return []
+
+    def list_space_pages(self, space_id: str) -> list[dict[str, Any]]:
+        return self.pages_by_space.get(space_id, [])
 
     def get_page_detail(self, page_id: str) -> dict[str, Any]:
         return self.details_by_page[page_id]
@@ -98,7 +104,7 @@ def _page_detail() -> dict[str, Any]:
 def _adapter() -> AtlassianSourceAdapter:
     client = _FakeConfluenceClient(
         spaces=[_space()],
-        descendants_by_homepage={"home-001": [_page_ref()]},
+        pages_by_space={"space-001": [_page_ref()]},
         details_by_page={"page-001": _page_detail()},
     )
     return AtlassianSourceAdapter(
@@ -141,7 +147,7 @@ def test_fetch_pages_without_provider_yields_empty_acl_and_empty_mvp_fields() ->
 def test_fetch_pages_uses_injected_acl_provider() -> None:
     client = _FakeConfluenceClient(
         spaces=[_space()],
-        descendants_by_homepage={"home-001": [_page_ref()]},
+        pages_by_space={"space-001": [_page_ref()]},
         details_by_page={"page-001": _page_detail()},
     )
     adapter = AtlassianSourceAdapter(
@@ -405,7 +411,7 @@ def test_settings_default_empty_restriction_policy_is_mark_missing() -> None:
     allow_authenticated 는 ancestor restriction 조회 구현 전까지 opt-in 전용이며,
     provider 무인자 기본값도 Settings 기본값과 동일해야 한다(이중 계약 고정).
     """
-    assert Settings().atlassian_empty_restriction_policy == "mark_missing"
+    assert Settings(_env_file=None).atlassian_empty_restriction_policy == "mark_missing"
     provider = ConfluenceRestrictionAclProvider(client=object())
     assert provider.empty_restriction_policy == "mark_missing"
 
@@ -429,6 +435,7 @@ def test_build_restriction_acl_provider_builds_provider_with_settings_policy() -
         atlassian_group_acl_field_order="name,id",
         atlassian_group_acl_prefix="confluence-group:",
         atlassian_public_acl_group="*",
+        atlassian_empty_restriction_policy="mark_missing",
     )
 
     provider = build_restriction_acl_provider(settings)
@@ -609,7 +616,7 @@ def test_adapter_passes_crawl_ancestor_chain_to_capable_provider() -> None:
     provider = _CapturingProvider()
     client = _FakeConfluenceClient(
         spaces=[_space()],
-        descendants_by_homepage={"home-001": [_page_ref()]},
+        pages_by_space={"space-001": [_page_ref()]},
         details_by_page={"page-001": _page_detail()},
     )
     adapter = AtlassianSourceAdapter(
@@ -686,7 +693,7 @@ def test_fetch_pages_resets_provider_cache_per_run() -> None:
     provider = _ResetSpyProvider()
     client = _FakeConfluenceClient(
         spaces=[_space()],
-        descendants_by_homepage={"home-001": [_page_ref()]},
+        pages_by_space={"space-001": [_page_ref()]},
         details_by_page={"page-001": _page_detail()},
     )
     adapter = AtlassianSourceAdapter(
@@ -724,7 +731,7 @@ def test_resolve_acl_provider_failure_degrades_fail_closed() -> None:
 
     client = _FakeConfluenceClient(
         spaces=[_space()],
-        descendants_by_homepage={"home-001": [_page_ref()]},
+        pages_by_space={"space-001": [_page_ref()]},
         details_by_page={"page-001": _page_detail()},
     )
     adapter = AtlassianSourceAdapter(
@@ -775,7 +782,7 @@ def test_fetch_pages_normalizes_webui_link_when_site_url_set() -> None:
     """site_url 주입 시 Qdrant webui_link/RAG sources[].url 이 absolute 로 적재된다(§2-5)."""
     client = _FakeConfluenceClient(
         spaces=[_space()],
-        descendants_by_homepage={"home-001": [_page_ref()]},
+        pages_by_space={"space-001": [_page_ref()]},
         details_by_page={"page-001": _page_detail()},
     )
     adapter = AtlassianSourceAdapter(

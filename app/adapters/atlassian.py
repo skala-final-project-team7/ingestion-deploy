@@ -775,6 +775,37 @@ def _build_admin_confluence_client(settings: Settings) -> Any:
             super().__init__(config=config)
             # 상대 경로("/spaces" 등 v2 API)의 기준을 게이트웨이 → site 로 교체.
             self.base_url = f"{site_url}/wiki/api/v2"
+            self._space_id_by_homepage_id: dict[str, str] = {}
+
+        def list_spaces(self) -> list[dict[str, Any]]:
+            spaces = super().list_spaces()
+            self._space_id_by_homepage_id = {
+                str(space.get("homepageId")): str(space.get("id"))
+                for space in spaces
+                if space.get("homepageId") and space.get("id")
+            }
+            return spaces
+
+        def list_space_pages(self, space_id: str) -> list[dict[str, Any]]:
+            if not space_id:
+                raise ValueError("space_id is required")
+            return self._get_paginated(
+                f"/spaces/{space_id}/pages",
+                {"limit": 25, "body-format": "storage"},
+            )
+
+        def list_page_descendants(self, homepage_id: str) -> list[dict[str, Any]]:
+            """Old vendored workflow compatibility: route homepage crawl to space pages.
+
+            ingestion-deploy can run against a pinned lina-ai-agents version whose full crawl
+            workflow still calls `list_page_descendants(homepageId)`. For admin-key full crawl,
+            keep that old workflow working while changing the effective enumeration to the
+            canonical `/spaces/{spaceId}/pages` endpoint.
+            """
+            space_id = self._space_id_by_homepage_id.get(str(homepage_id))
+            if space_id:
+                return self.list_space_pages(space_id)
+            return super().list_page_descendants(homepage_id)
 
         def _headers(self) -> dict[str, str]:
             return {
