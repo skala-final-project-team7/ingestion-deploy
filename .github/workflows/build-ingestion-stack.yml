@@ -42,6 +42,7 @@ on:
 
 permissions:
   contents: read
+  actions: write
 
 env:
   HARBOR_URL: ${{ secrets.HARBOR_URL }}
