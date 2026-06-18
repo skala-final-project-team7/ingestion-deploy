@@ -19,6 +19,9 @@ COPY pyproject.toml ./
 
 # 의존성 설치는 소스 복사 전에 실행해 캐시 무효화를 줄임
 ARG INSTALL_EXTRAS="ingestion,embedding"
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --no-cache-dir uv \
     && uv pip install --system -e ".[${INSTALL_EXTRAS}]"
