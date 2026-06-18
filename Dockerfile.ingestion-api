@@ -12,10 +12,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_COMPILE_BYTECODE=1 \
     UV_NO_CACHE=0 \
     UV_CACHE_DIR=/root/.cache/uv \
+    UV_LINK_MODE=copy \
     RAG_USE_REAL_ADAPTERS=true
 
 # 변경 빈도가 낮은 의존성 정의부터 복사
-COPY pyproject.toml ./
+COPY pyproject.toml uv.lock ./
 
 # 의존성 설치는 소스 복사 전에 실행해 캐시 무효화를 줄임
 ARG INSTALL_EXTRAS=ingestion
@@ -23,6 +24,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=cache,target=/root/.cache/pip \
+    --mount=type=cache,target=/root/.cache/uv \
     pip install --no-cache-dir uv \
     && uv pip install --system -e ".[${INSTALL_EXTRAS}]"
 
