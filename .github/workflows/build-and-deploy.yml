@@ -68,6 +68,7 @@ env:
   MANIFEST_REPO_NAME: ${{ secrets.MANIFEST_REPO_NAME }}
   MANIFEST_REPO_TOKEN: ${{ secrets.MANIFEST_REPO_TOKEN }}
   MANIFEST_REPO_BRANCH: main
+  MANIFEST_CHECKOUT_PATH: manifest-repo
   MANIFEST_VALUES_FILE: helm/applications/team7-app/values.yaml
 
   IMAGE_TAG_SHA: ${{ github.sha }}
@@ -255,13 +256,60 @@ jobs:
           IMAGES_JOINED="${PUSHED_IMAGES[*]}"
           echo "images=${IMAGES_JOINED}" >> "${GITHUB_OUTPUT}"
 
+      - name: Resolve manifest repository
+        if: ${{ env.MANIFEST_REPO_OWNER != '' && env.MANIFEST_REPO_NAME != '' && env.MANIFEST_REPO_TOKEN != '' }}
+        id: manifest_repo
+        run: |
+          set -euo pipefail
+
+          OWNER="${MANIFEST_REPO_OWNER//$'\n'/}"
+          OWNER="${OWNER#"${OWNER%%[![:space:]]*}"}"
+          OWNER="${OWNER%"${OWNER##*[![:space:]]}"}"
+          OWNER="${OWNER#https://github.com/}"
+          OWNER="${OWNER#http://github.com/}"
+          OWNER="${OWNER#git@github.com:}"
+          OWNER="${OWNER%%/*}"
+
+          NAME="${MANIFEST_REPO_NAME//$'\n'/}"
+          NAME="${NAME#"${NAME%%[![:space:]]*}"}"
+          NAME="${NAME%"${NAME##*[![:space:]]}"}"
+          NAME="${NAME#https://github.com/}"
+          NAME="${NAME#http://github.com/}"
+          NAME="${NAME#git@github.com:}"
+          NAME="${NAME%.git}"
+          NAME="${NAME#/}"
+          NAME="${NAME%/}"
+
+          if [[ "${NAME}" == "${OWNER}/"* ]]; then
+            NAME="${NAME#${OWNER}/}"
+          fi
+
+          if [[ -z "${OWNER}" || -z "${NAME}" ]]; then
+            echo "MANIFEST_REPO_OWNER and MANIFEST_REPO_NAME must resolve to owner and repo name." >&2
+            exit 1
+          fi
+
+          if [[ "${NAME}" == */* ]]; then
+            echo "MANIFEST_REPO_NAME must be a repository name like 'infra', not '${NAME}'." >&2
+            exit 1
+          fi
+
+          VALUES_FILE="${MANIFEST_VALUES_FILE#/}"
+          VALUES_FILE="${VALUES_FILE#${MANIFEST_CHECKOUT_PATH}/}"
+
+          echo "repository=${OWNER}/${NAME}" >> "${GITHUB_OUTPUT}"
+          echo "checkout_path=${MANIFEST_CHECKOUT_PATH}" >> "${GITHUB_OUTPUT}"
+          echo "values_file=${VALUES_FILE}" >> "${GITHUB_OUTPUT}"
+          echo "Resolved manifest repository: ${OWNER}/${NAME}"
+          echo "Resolved manifest values file: ${VALUES_FILE}"
+
       - name: Checkout manifest repository
         if: ${{ env.MANIFEST_REPO_OWNER != '' && env.MANIFEST_REPO_NAME != '' && env.MANIFEST_REPO_TOKEN != '' }}
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.MANIFEST_REPO_OWNER }}/${{ env.MANIFEST_REPO_NAME }}
+          repository: ${{ steps.manifest_repo.outputs.repository }}
           token: ${{ env.MANIFEST_REPO_TOKEN }}
-          path: manifest-repo
+          path: ${{ steps.manifest_repo.outputs.checkout_path }}
           ref: ${{ env.MANIFEST_REPO_BRANCH }}
 
       - name: Update manifest repository images
@@ -269,11 +317,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          TARGET_FILE="manifest-repo/${MANIFEST_VALUES_FILE}"
+          TARGET_FILE="${MANIFEST_CHECKOUT_PATH}/${MANIFEST_VALUES_FILE}"
           if [ -z "${MANIFEST_IMAGES}" ]; then
             echo "No image list to update."
             exit 0
           fi
+
+          git -C "${MANIFEST_CHECKOUT_PATH}" pull --ff-only origin "${MANIFEST_REPO_BRANCH}"
 
           if [ ! -f "${TARGET_FILE}" ]; then
             echo "Manifest values file not found: ${TARGET_FILE}" >&2
@@ -304,7 +354,7 @@ jobs:
             exit 0
           fi
 
-          cd manifest-repo
+          cd "${MANIFEST_CHECKOUT_PATH}"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "${MANIFEST_VALUES_FILE}"
@@ -314,15 +364,16 @@ jobs:
             exit 0
           fi
 
-          if ! git pull --ff-only origin "${MANIFEST_REPO_BRANCH}"; then
-            echo "Unable to fast-forward manifest repo before commit; try again."
-            exit 1
-          fi
-
           git commit -m "Update image tags to ${IMAGE_TAG_SHA}"
-          git push origin "${MANIFEST_REPO_BRANCH}"
+          if ! git push origin "${MANIFEST_REPO_BRANCH}"; then
+            echo "Manifest push was rejected; rebasing on latest ${MANIFEST_REPO_BRANCH} and retrying once."
+            git pull --rebase origin "${MANIFEST_REPO_BRANCH}"
+            git push origin "${MANIFEST_REPO_BRANCH}"
+          fi
         env:
           MANIFEST_IMAGES: ${{ steps.push-images.outputs.images }}
+          MANIFEST_CHECKOUT_PATH: ${{ steps.manifest_repo.outputs.checkout_path }}
+          MANIFEST_VALUES_FILE: ${{ steps.manifest_repo.outputs.values_file }}
 
       - name: Skip manifest trigger when secrets are not configured
         if: ${{ !(env.MANIFEST_REPO_OWNER != '' && env.MANIFEST_REPO_NAME != '' && env.MANIFEST_REPO_TOKEN != '') }}
