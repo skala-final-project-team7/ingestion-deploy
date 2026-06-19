@@ -84,6 +84,39 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Free runner disk space before Docker build
+        run: |
+          set -euo pipefail
+
+          echo "Disk usage before cleanup:"
+          df -h
+          docker system df || true
+
+          SUDO=""
+          if command -v sudo >/dev/null 2>&1; then
+            SUDO="sudo"
+          fi
+
+          for path in \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /usr/share/swift \
+            /usr/local/share/boost \
+            /opt/ghc; do
+            if [ -e "${path}" ]; then
+              echo "Removing unused hosted-toolcache path: ${path}"
+              ${SUDO} rm -rf "${path}" || true
+            fi
+          done
+
+          ${SUDO} apt-get clean || true
+          docker builder prune -af || true
+          docker system prune -af --volumes || true
+
+          echo "Disk usage after cleanup:"
+          df -h
+          docker system df || true
+
       - name: Resolve Harbor settings
         id: harbor
         run: |
@@ -255,6 +288,22 @@ jobs:
 
           IMAGES_JOINED="${PUSHED_IMAGES[*]}"
           echo "images=${IMAGES_JOINED}" >> "${GITHUB_OUTPUT}"
+
+      - name: Cleanup Docker build artifacts
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+
+          echo "Disk usage before post-build cleanup:"
+          df -h
+          docker system df || true
+
+          docker builder prune -af || true
+          docker system prune -af --volumes || true
+
+          echo "Disk usage after post-build cleanup:"
+          df -h
+          docker system df || true
 
       - name: Resolve manifest repository
         if: ${{ env.MANIFEST_REPO_OWNER != '' && env.MANIFEST_REPO_NAME != '' && env.MANIFEST_REPO_TOKEN != '' }}

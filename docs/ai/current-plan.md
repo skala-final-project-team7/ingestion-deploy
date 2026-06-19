@@ -50,6 +50,20 @@
   RabbitMQ completion event 발행(`app/api/ingest_completion.py`). 실 RabbitMQ publisher/consumer·
   `adminUserId` credential lookup wiring 은 후속(featureI-7c).
 
+## 현재 Change-set — CI Docker 빌드 디스크 고갈 완화 (2026-06-19)
+
+- **작업 목표**: `build-push ingestion-worker` GitHub Actions job 에서 Docker buildx 중 러너 디스크가
+  가득 차 `_diag/Worker_*.log` 기록까지 실패하는 문제를 완화한다.
+- **수정 대상 파일**: `.github/workflows/build-and-deploy.yml`, `docs/ai/current-plan.md`
+- **수정하지 않을 파일**: `Dockerfile.ingestion-*`, `app/**`, DB/RabbitMQ/Confluence 계약 문서
+- **예상 영향 범위**: Harbor 이미지 빌드 job 의 사전/사후 디스크 정리와 디스크 사용량 진단 로그만 변경.
+  애플리케이션 런타임과 이미지 태그/manifest 갱신 계약은 변경하지 않는다.
+- **테스트 방법**: 워크플로 YAML 구조 확인, `git diff` 검토. 로컬에서 GitHub-hosted runner 디스크 상태는
+  재현하지 않는다.
+- **완료 기준**: 빌드 전에 대용량 호스팅 툴체인과 Docker 잔여물을 정리하고, 빌드 후에도 Docker/Buildx
+  캐시를 정리하며, `df -h` 로그로 원인 파악이 가능하다.
+- **문서 수정 필요 여부**: 현재 Plan 기록만 필요. 아키텍처/DB 스키마 변경 없음.
+
 ---
 
 ## Milestone A — 스캐폴드·기반 (현재)
