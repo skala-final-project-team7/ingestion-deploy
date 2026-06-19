@@ -68,7 +68,7 @@ env:
   MANIFEST_REPO_NAME: ${{ secrets.MANIFEST_REPO_NAME }}
   MANIFEST_REPO_TOKEN: ${{ secrets.MANIFEST_REPO_TOKEN }}
   MANIFEST_REPO_BRANCH: main
-  MANIFEST_VALUES_FILE: infra/helm/applications/team7-app/values.yaml
+  MANIFEST_VALUES_FILE: helm/applications/team7-app/values.yaml
 
   IMAGE_TAG_SHA: ${{ github.sha }}
 
