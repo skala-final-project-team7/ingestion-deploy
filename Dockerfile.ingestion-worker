@@ -35,7 +35,7 @@ RUN set -eux; \
     fi
 RUN --mount=type=cache,target=/root/.cache/pip \
     --mount=type=cache,target=/root/.cache/uv \
-    pip install --no-cache-dir uv \
+    python -m pip install uv \
     && uv pip install --system -e ".[${INSTALL_EXTRAS}]"
 
 # 소스는 마지막에 복사해 코드 변경이 의존성 캐시를 덜 깨뜨리게 함

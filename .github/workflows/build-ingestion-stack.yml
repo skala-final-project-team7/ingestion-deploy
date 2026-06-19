@@ -19,6 +19,7 @@ on:
       - "pyproject.toml"
       - "requirements*.txt"
       - ".github/workflows/build-ingestion-stack.yml"
+      - ".github/workflows/build-and-deploy.yml"
   workflow_dispatch:
     inputs:
       run_number:
