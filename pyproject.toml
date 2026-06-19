@@ -30,6 +30,14 @@ dependencies = [
     # --- 운영 모니터링 ---
     "prometheus-client>=0.20",     # Worker 커스텀 메트릭 (수집/청킹/임베딩 잡 카운터·지연)
     "prometheus-fastapi-instrumentator>=7.0,<8",  # HTTP API /metrics (RAG Pipeline 앱과 동일 패턴)
+    "opentelemetry-api>=1.29,<2",
+    "opentelemetry-sdk>=1.29,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.29,<2",
+    "opentelemetry-instrumentation-fastapi>=0.50b0,<1",
+    "opentelemetry-instrumentation-httpx>=0.50b0,<1",
+    "opentelemetry-instrumentation-pika>=0.50b0,<1",
+    "opentelemetry-instrumentation-pymongo>=0.50b0,<1",
+    "opentelemetry-instrumentation-sqlalchemy>=0.50b0,<1",
 ]
 
 [project.optional-dependencies]

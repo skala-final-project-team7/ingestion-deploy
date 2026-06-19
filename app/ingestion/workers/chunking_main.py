@@ -40,6 +40,7 @@ from app.ingestion.bootstrap import build_chunking_worker_deps
 from app.ingestion.workers import QUEUE_CHUNKING
 from app.ingestion.workers.chunking_worker import iter_chunking_worker
 from app.ingestion.workers.consumer import PikaMessageConsumer
+from app.telemetry import initialize_tracing
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -134,6 +135,7 @@ def main() -> None:
     _LOGGER.info("Prometheus metrics 서버 기동 — port=%s path=/metrics", metrics_port)
 
     settings = get_settings()
+    initialize_tracing(settings)
     _log_boot_mode(settings)
 
     import pika.exceptions

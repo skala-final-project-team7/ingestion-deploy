@@ -260,6 +260,15 @@ class Settings(BaseSettings):
     # (RAG_VERIFIER_FULL_CONTEXT_GROUNDING=true) 후 leniency 검증(--debug-leniency)하고 채택.
     verifier_full_context_grounding: bool = False
 
+    # --- OpenTelemetry Tracing ---
+    # 기본은 비활성화. 운영 Helm 은 RAG_OTEL_ENABLED=true 와 collector endpoint 를 주입한다.
+    otel_enabled: bool = False
+    otel_service_name: str = "ingestion-api"
+    otel_exporter_otlp_endpoint: str = (
+        "http://otel-collector.skala3-finalproj-class2-team7.svc.cluster.local:4317"
+    )
+    otel_environment: str = "dev"
+
     # --- 운영 어댑터 토글 (build_real_deps 후속, 2026-05-18) ---
     # True면 lifespan이 build_real_deps 분기로 E5 + BM25 + Qdrant from_settings +
     # CrossEncoderRerankerImpl 부트스트랩. False(기본)는 build_poc_deps 분기로

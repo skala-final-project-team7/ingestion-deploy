@@ -38,6 +38,7 @@ from app.api.deps import build_ingest_deps
 from app.api.routes import router as ingest_router
 from app.api.webhook_routes import webhook_router
 from app.config import get_settings
+from app.telemetry import initialize_tracing
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ def create_app() -> FastAPI:
         description="척척학사(LINA) Confluence 기반 RAG 챗봇 서비스의 데이터 수집 파이프라인",
         lifespan=_lifespan,
     )
+    initialize_tracing(get_settings(), app)
     app.include_router(ingest_router)
     app.include_router(webhook_router)
 

@@ -62,6 +62,7 @@ from app.schemas.chunk import Chunk
 from app.schemas.enums import IngestionStage, IngestionStatus, SourceType
 from app.storage.jobs import IngestionJobRecord, IngestionJobsRepository
 from app.storage.raw_store import RawPageStore
+from app.telemetry import record_exception, set_span_attributes, start_span
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -187,9 +188,33 @@ def process_chunking_message(
             없을 때(상위에서 DLQ 처리).
     """
     source_type = str(message.get("source_type", SourceType.PAGE.value))
-    if source_type == SourceType.ATTACHMENT.value:
-        return _process_attachment_message(message, deps)
-    return _process_page_message(message, deps)
+    with start_span(
+        "ingestion.chunking.message",
+        {
+            "ingestion.source_type": source_type,
+            "ingestion.page_id": _string_or_none(message.get("page_id")),
+            "ingestion.attachment_id": _string_or_none(message.get("attachment_id")),
+        },
+    ) as span:
+        try:
+            result = (
+                _process_attachment_message(message, deps)
+                if source_type == SourceType.ATTACHMENT.value
+                else _process_page_message(message, deps)
+            )
+        except Exception as exc:
+            record_exception(span, exc)
+            raise
+        set_span_attributes(
+            span,
+            {
+                "ingestion.status": result.status.value,
+                "ingestion.chunk_count": result.chunks,
+                "ingestion.upserted_count": result.upserted,
+                "ingestion.skipped_count": result.skipped,
+            },
+        )
+        return result
 
 
 def _process_page_message(
@@ -203,7 +228,8 @@ def _process_page_message(
     page_id = str(message["page_id"])
     started_at = datetime.now(UTC)
 
-    page = deps.raw_store.get_page(page_id)
+    with start_span("ingestion.raw_store.get_page", {"ingestion.page_id": page_id}):
+        page = deps.raw_store.get_page(page_id)
     if page is None:
         raise RawPageNotFoundError(page_id)
 
@@ -213,25 +239,42 @@ def _process_page_message(
         return ChunkingMessageResult(page_id=page_id, status=IngestionStatus.INVALID_ACL)
 
     # doc_type: 분석기[Agent] 주입 시 스페이스 단위 LLM 판별, 미주입 시 라벨 휴리스틱 폴백.
-    doc_type = (
-        deps.doc_type_resolver.resolve_doc_type(page)
-        if deps.doc_type_resolver is not None
-        else None
-    )
-    chunks = chunk_page(page, doc_type)
+    with start_span("ingestion.doc_type.resolve", {"ingestion.page_id": page_id}):
+        doc_type = (
+            deps.doc_type_resolver.resolve_doc_type(page)
+            if deps.doc_type_resolver is not None
+            else None
+        )
+    with start_span(
+        "ingestion.chunk.page",
+        {"ingestion.page_id": page_id, "ingestion.doc_type": _string_or_none(doc_type)},
+    ) as span:
+        chunks = chunk_page(page, doc_type)
+        set_span_attributes(span, {"ingestion.chunk_count": len(chunks)})
     if not chunks:
         _record(deps, page_id, IngestionStatus.EMPTY_BODY, started_at, error="no chunks")
         return ChunkingMessageResult(page_id=page_id, status=IngestionStatus.EMPTY_BODY)
 
-    result = index_chunks(
-        chunks,
-        version_by_page_id={page.page_id: page.version_number},
-        dense_embedder=deps.dense_embedder,
-        sparse_embedder=deps.sparse_embedder,
-        store=deps.store,
-        cache=deps.cache,
-        chunk_lookup=deps.chunk_lookup,
-    )
+    with start_span(
+        "ingestion.index_chunks",
+        {"ingestion.page_id": page_id, "ingestion.chunk_count": len(chunks)},
+    ) as span:
+        result = index_chunks(
+            chunks,
+            version_by_page_id={page.page_id: page.version_number},
+            dense_embedder=deps.dense_embedder,
+            sparse_embedder=deps.sparse_embedder,
+            store=deps.store,
+            cache=deps.cache,
+            chunk_lookup=deps.chunk_lookup,
+        )
+        set_span_attributes(
+            span,
+            {
+                "ingestion.upserted_count": result.upserted_count,
+                "ingestion.skipped_count": result.skipped_count,
+            },
+        )
     _record(deps, page_id, IngestionStatus.SUCCESS, started_at, error=None)
     return ChunkingMessageResult(
         page_id=page_id,
@@ -259,10 +302,15 @@ def _process_attachment_message(
     attachment_id = str(message["attachment_id"])
     started_at = datetime.now(UTC)
 
-    page = deps.raw_store.get_page(page_id)
+    with start_span("ingestion.raw_store.get_page", {"ingestion.page_id": page_id}):
+        page = deps.raw_store.get_page(page_id)
     if page is None:
         raise RawPageNotFoundError(page_id)
-    attachment = deps.raw_store.get_attachment(attachment_id)
+    with start_span(
+        "ingestion.raw_store.get_attachment",
+        {"ingestion.page_id": page_id, "ingestion.attachment_id": attachment_id},
+    ):
+        attachment = deps.raw_store.get_attachment(attachment_id)
     if attachment is None:
         raise AttachmentNotFoundError(attachment_id)
 
@@ -281,7 +329,19 @@ def _process_attachment_message(
         )
 
     # 첨부 분석 — 유형 판별 + 텍스트 유효성(결정론, LLM 미호출). 미통과 시 그 status 기록 후 스킵.
-    analysis = analyze_attachment(attachment)
+    with start_span(
+        "ingestion.attachment.analyze",
+        {"ingestion.page_id": page_id, "ingestion.attachment_id": attachment_id},
+    ) as span:
+        analysis = analyze_attachment(attachment)
+        set_span_attributes(
+            span,
+            {
+                "ingestion.attachment_type": _string_or_none(analysis.attachment_type),
+                "ingestion.status": analysis.status.value,
+                "ingestion.analyzable": analysis.analyzable,
+            },
+        )
     if not analysis.analyzable:
         _record(
             deps,
@@ -301,7 +361,11 @@ def _process_attachment_message(
     # 격리한다(A4) — consumer 에 nack/DLQ 가 없어 전파 시 배치 중단 + 무한 재전송 poison 루프.
     if deps.attachment_downloader is not None:
         try:
-            attachment = deps.attachment_downloader.ensure_local(attachment)
+            with start_span(
+                "ingestion.attachment.download",
+                {"ingestion.page_id": page_id, "ingestion.attachment_id": attachment_id},
+            ):
+                attachment = deps.attachment_downloader.ensure_local(attachment)
         except AttachmentDownloadError as exc:
             _record(
                 deps,
@@ -320,7 +384,16 @@ def _process_attachment_message(
 
     # 첨부 청킹 — chunk_attachment 는 첨부 파일을 직접 읽는다(테스트는 chunk_attachment_fn 주입).
     try:
-        chunks = deps.chunk_attachment_fn(attachment, page, analysis.attachment_type)
+        with start_span(
+            "ingestion.chunk.attachment",
+            {
+                "ingestion.page_id": page_id,
+                "ingestion.attachment_id": attachment_id,
+                "ingestion.attachment_type": _string_or_none(analysis.attachment_type),
+            },
+        ) as span:
+            chunks = deps.chunk_attachment_fn(attachment, page, analysis.attachment_type)
+            set_span_attributes(span, {"ingestion.chunk_count": len(chunks)})
     except ValueError as exc:
         # 암호화 PDF(ATTACH_ENCRYPTED) / 미지원 유형은 첨부 단위로 격리(본문·다른 첨부 무영향).
         status = (
@@ -376,16 +449,31 @@ def _process_attachment_message(
             page_id=page_id, status=IngestionStatus.SUCCESS, attachment_id=attachment_id
         )
 
-    result = index_chunks(
-        chunks,
-        version_by_page_id={page.page_id: page.version_number},
-        dense_embedder=deps.dense_embedder,
-        sparse_embedder=deps.sparse_embedder,
-        store=deps.store,
-        cache=deps.cache,
-        chunk_lookup=deps.chunk_lookup,
-        attachment_download_urls={attachment_id: attachment.download_url},
-    )
+    with start_span(
+        "ingestion.index_chunks",
+        {
+            "ingestion.page_id": page_id,
+            "ingestion.attachment_id": attachment_id,
+            "ingestion.chunk_count": len(chunks),
+        },
+    ) as span:
+        result = index_chunks(
+            chunks,
+            version_by_page_id={page.page_id: page.version_number},
+            dense_embedder=deps.dense_embedder,
+            sparse_embedder=deps.sparse_embedder,
+            store=deps.store,
+            cache=deps.cache,
+            chunk_lookup=deps.chunk_lookup,
+            attachment_download_urls={attachment_id: attachment.download_url},
+        )
+        set_span_attributes(
+            span,
+            {
+                "ingestion.upserted_count": result.upserted_count,
+                "ingestion.skipped_count": result.skipped_count,
+            },
+        )
     _record(
         deps, page_id, IngestionStatus.SUCCESS, started_at, error=None, attachment_id=attachment_id
     )
@@ -497,3 +585,10 @@ def _record(
             error=error,
         )
     )
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    enum_value = getattr(value, "value", None)
+    return str(enum_value if enum_value is not None else value)
